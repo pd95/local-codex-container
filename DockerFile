@@ -3,7 +3,7 @@ FROM alpine:latest
 
 WORKDIR /workdir
 
-RUN apk add bash npm file curl git
+RUN apk add bash npm file curl git ripgrep jq
 RUN npm i -g @openai/codex 
 
 COPY config.toml /root/.codex/
@@ -11,6 +11,6 @@ COPY config.toml /root/.codex/
 # Configure git
 RUN git config --global user.email "codex@localhost"
 RUN git config --global user.name "Codex CLI"
-RUN git config --global init.defaultBranch main
+RUN git config --global init.defaultBranch "main"
 
 CMD codex --dangerously-bypass-approvals-and-sandbox --cd /workdir
