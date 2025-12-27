@@ -99,6 +99,10 @@ Later you can start the container again:
 
     container start -i "codex-`basename $PWD`"
 
+To remove the old/unused container later:
+
+    container rm "codex-`basename $PWD`"
+
 To check what containers (even stopped ones) are lingering around use:
 
     container ls -a
