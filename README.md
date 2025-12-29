@@ -4,7 +4,7 @@
 
 This repository is combining multiple Open Source tools to run an agentic AI safely and privately on a Mac.
 
-It runs OpenAIs [Codex CLI](https://github.com/openai/codex) on your Mac using Apples Containerization tool, connecting to the locally running Ollama instance.
+It runs OpenAIs [Codex CLI](https://github.com/openai/codex) on your Mac using Apple’s Containerization tool, connecting to the locally running Ollama instance.
 
 All tools are available as Open Source on GitHub:
 
@@ -12,12 +12,26 @@ All tools are available as Open Source on GitHub:
 - Codex CLI: [https://github.com/openai/codex](https://github.com/openai/codex)
 - Ollama: [https://github.com/ollama/ollama](https://github.com/ollama/ollama)
 
+## Prerequisites
+
+You need a **Mac with Apple Silicon and at least 32 GB RAM**. The setup is currently only tested on macOS 26 but might also work on macOS 15 installed (possible restrictions apply to the `container` tool).
+
 ## Preliminary setup
 
-I suppose you do not want to install everything from source (which would be doable). Therefore here are links to install the official releases of Ollama and Apples `container` tool:
+I suppose you do not want to install everything from source (which would be doable). Therefore here are links to install the official releases of Ollama and Apple’s `container` tool:
 
 - [`container` GitHubReleases](https://github.com/apple/container/releases)
 - [Ollama download page](https://ollama.com/download)
+
+After installing both tools, open Terminal app and run the following commands:
+
+```bash
+# Pull gpt-oss:20b model (requires 13 GB on disk!)
+ollama pull gpt-oss:20b
+
+# start the container API server (required for building container images)
+container system start
+```
 
 ## Network configuration
 
