@@ -33,6 +33,26 @@ ollama pull gpt-oss:20b
 container system start
 ```
 
+## Build codex container image(s)
+
+To build the codex container images for later use, I have written three `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
+
+- `DockerFile` for a plain Alpine Linux (~320 MB)
+- `DockerFile.python` for a Alpine based Python installation (~330 MB)
+- `DockerFile.swift` for an Ubuntu based Swift installation (~1.68 GB)
+
+The image build process is using `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container users identifier when interacting with git and to use `main` as the default branch when initializing a new repository.
+
+Further the build process is going to copy the `config.toml` file into the container at `~/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` networks host IP address 192.168.64.1.
+
+Use the following `container` commands to build the codex containers `codex`, `codex-python` and `codex-swift` from the corresponding `DockerFile` source:
+
+```bash
+container build -t codex -f DockerFile
+container build -t codex-python -f DockerFile.python
+container build -t codex-swift -f DockerFile.swift
+```
+
 ## Network configuration
 
 By default, Ollama is only listening on localhost connections, i.e. on <http://localhost:11434> or <http://127.0.0.1:11434>. To be able to connect from a container (through a virtual network) to the Ollama service running on localhost, we have two options:
@@ -83,26 +103,6 @@ This tool should be run in a separate Terminal window, as it will log all the "c
 ```bash
 swift build
 HOST=192.168.64.1 PORT=11434 swift run
-```
-
-## Build codex container image(s)
-
-To build the codex container image for later use I have written three `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
-
-- `DockerFile` for a plain Alpine Linux (~320 MB)
-- `DockerFile.python` for a Alpine based Python installation (~330 MB)
-- `DockerFile.swift` for an Ubuntu based Swift installation (~1.68 GB)
-
-The build process is using `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as its identifier when interacting with git and to use `main` as the default branch when initializing a new repository.
-
-Further the build process is going to copy the `config.toml` file into the container at `~/.codex/` so that codex will properly connect to the locally running Ollama instance on 192.168.64.1.
-
-Use the following `container` commands to build the codex containers from the corresponding `DockerFile` source:
-
-```bash
-container build -t codex -f DockerFile
-container build -t codex-python -f DockerFile.python
-container build -t codex-swift -f DockerFile.swift
 ```
 
 ## Run a codex container in the current directory
