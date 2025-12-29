@@ -14,4 +14,4 @@ RUN git config --global user.email "codex@localhost" && \
     git config --global user.name "Codex CLI" && \
     git config --global init.defaultBranch "main"
 
-CMD codex --dangerously-bypass-approvals-and-sandbox
+CMD codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss
