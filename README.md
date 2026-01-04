@@ -196,3 +196,21 @@ Remove the container to destroy the device configuration
 ```bash
 container rm "codex-openai-`basename $PWD`"
 ```
+
+### Store auth.json in macOS Keychain
+
+After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/root/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
+
+```bash
+./codex-auth-keychain.sh store-from-container "codex-openai-`basename $PWD`"
+```
+
+If you created a fresh container and want to restore the authorization from the Keychain, use:
+
+```bash
+./codex-auth-keychain.sh load-to-container "codex-openai-`basename $PWD`"
+```
+
+Notes:
+- The container must be running for both commands.
+- The default path is `/root/.codex/auth.json` unless you pass an explicit path.
