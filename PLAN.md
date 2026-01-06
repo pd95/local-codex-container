@@ -32,7 +32,7 @@ Create a single bash script (approach A) that manages creation/running/restartin
    - Start an auth container (name like `codex-openai-auth-$(basename "$PWD")`).
    - Run `codex login --device-auth` automatically inside it.
    - After completion, store auth: `./codex-auth-keychain.sh store-from-container <auth-container>`.
-   - Remove auth container if desired.
+   - Remove auth container after storing the key.
 3) **Run main container**:
    - Ensure container exists (create if missing, start if stopped).
    - Start detached: `container start <name>`.
@@ -52,11 +52,16 @@ Create a single bash script (approach A) that manages creation/running/restartin
   - `container_running(name)`
   - `default_name(prefix)`
   - `run_container(args)`
+  - `exec_shell(name)` for `--shell` (uses `container exec -it`).
 
 ## Error Handling
 - Fail fast if `container` is missing.
 - Print clear errors if image not found or container actions fail.
 - For `--openai`: warn if keychain store/load fails.
+- If a requested container is already running:
+  - Prefer `container exec -it <name> ...` instead of starting a new instance.
+  - For `--shell`, exec into the running container directly.
+  - If not using `--shell`, print a suggestion to use `codexctl exec` or `--shell`.
 
 ## Testing/Validation
 - `codexctl run --temp` runs throwaway container.
@@ -64,7 +69,7 @@ Create a single bash script (approach A) that manages creation/running/restartin
 - `codexctl run --openai` triggers auth flow if key missing.
 - `codexctl run --openai --auth` forces login flow.
 
-## Open Questions (to resolve before coding)
-- Should auth container be removed automatically after storing key? (default: yes)
-- Should `codexctl auth` run login flow and then exit, or proceed to start the main container?
-- Should `--openai` imply `--shell` (bash) or direct `codex` run after auth?
+## Open Questions (resolved)
+- Auth container is removed automatically after storing key.
+- `codexctl auth` runs login flow and exits.
+- `--shell` forces a shell for both openai and local modes; otherwise run `codex` (openai) or default container command (local).
