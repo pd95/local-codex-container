@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTAINER_CMD="${CONTAINER_CMD:-container}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+require_container() {
+  command -v "$CONTAINER_CMD" >/dev/null 2>&1 || die "Missing '$CONTAINER_CMD' command"
+}
+
+container_list_all() {
+  "$CONTAINER_CMD" ls -a 2>/dev/null || true
+}
+
+container_list_running() {
+  "$CONTAINER_CMD" ls 2>/dev/null || true
+}
+
+container_exists() {
+  container_list_all | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+}
+
+container_running() {
+  container_list_running | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+}
+
+default_name() {
+  local prefix="$1"
+  echo "${prefix}$(basename "$PWD")"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: codexctl <command> [options]
+
+Commands:
+  build      Build Codex images
+  run        Create/start a container for the current directory
+  auth       Run OpenAI device auth flow and store in Keychain
+  exec       Exec into a running container (default: bash)
+  start      Start a container
+  stop       Stop a running container
+  restart    Restart a container
+  rm         Remove a container
+  ls         List containers
+
+Run "codexctl <command> --help" for command-specific options.
+EOF
+}
+
+usage_build() {
+  cat <<'EOF'
+Usage: codexctl build [--image NAME]
+
+Options:
+  --image NAME  One of: codex, codex-python, codex-swift (default: all)
+EOF
+}
+
+usage_run() {
+  cat <<'EOF'
+Usage: codexctl run [options]
+
+Options:
+  --name NAME     Container name (default: codex-<dir> or codex-openai-<dir>)
+  --image NAME    Image to use (default: codex or codex-swift with --openai)
+  --openai        Use OpenAI mode (device auth + codex bypass)
+  --auth          Force OpenAI login flow
+  --temp          Create a throwaway container (--rm)
+  --shell         Start a shell (bash) instead of default CMD
+  --cpu NUM       CPU cores for container
+  --mem SIZE      Memory limit (e.g. 8G)
+EOF
+}
+
+usage_auth() {
+  cat <<'EOF'
+Usage: codexctl auth [options]
+
+Options:
+  --name NAME   Auth container name (default: codex-openai-auth-<dir>)
+  --image NAME  Image to use (default: codex-swift)
+EOF
+}
+
+usage_exec() {
+  cat <<'EOF'
+Usage: codexctl exec [options] [-- command...]
+
+Options:
+  --name NAME  Container name (default: codex-<dir> or codex-openai-<dir>)
+  --openai     Use OpenAI name prefix
+  --shell      Run bash (default)
+EOF
+}
+
+usage_simple_name() {
+  cat <<'EOF'
+Usage: codexctl <start|stop|restart|rm> [--name NAME] [--openai]
+EOF
+}
+
+build_cmd() {
+  local image=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image="$2"; shift 2 ;;
+      --help) usage_build; return 0 ;;
+      *) die "Unknown option for build: $1" ;;
+    esac
+  done
+
+  require_container
+  case "$image" in
+    "") "$CONTAINER_CMD" build -t codex -f DockerFile
+        "$CONTAINER_CMD" build -t codex-python -f DockerFile.python
+        "$CONTAINER_CMD" build -t codex-swift -f DockerFile.swift
+        ;;
+    codex) "$CONTAINER_CMD" build -t codex -f DockerFile ;;
+    codex-python) "$CONTAINER_CMD" build -t codex-python -f DockerFile.python ;;
+    codex-swift) "$CONTAINER_CMD" build -t codex-swift -f DockerFile.swift ;;
+    *) die "Unknown image: $image" ;;
+  esac
+}
+
+run_auth_flow() {
+  local image="$1"
+  local auth_name="$2"
+
+  [ -x "$KEYCHAIN_SCRIPT" ] || die "Missing $KEYCHAIN_SCRIPT"
+
+  if container_exists "$auth_name"; then
+    die "Auth container already exists: $auth_name (remove it and retry)"
+  fi
+
+  "$CONTAINER_CMD" run -it \
+    --name "$auth_name" \
+    --mount "type=bind,src=$PWD,dst=/workdir" \
+    "$image" bash -lc 'codex login --device-auth'
+
+  "$KEYCHAIN_SCRIPT" store-from-container "$auth_name"
+  "$CONTAINER_CMD" rm "$auth_name"
+}
+
+ensure_keychain() {
+  [ -x "$KEYCHAIN_SCRIPT" ] || die "Missing $KEYCHAIN_SCRIPT"
+  "$KEYCHAIN_SCRIPT" verify >/dev/null 2>&1
+}
+
+run_local() {
+  local name="$1"
+  local image="$2"
+  local temp="$3"
+  local shell="$4"
+  local cpu="$5"
+  local mem="$6"
+
+  if [ -n "$name" ] && container_running "$name"; then
+    if [ "$shell" -eq 1 ]; then
+      "$CONTAINER_CMD" exec -it "$name" bash
+    else
+      echo "Container already running: $name"
+      echo "Use: codexctl exec --name \"$name\""
+    fi
+    return 0
+  fi
+
+  if [ -n "$name" ] && [ "$temp" -eq 1 ] && container_exists "$name"; then
+    die "Container already exists: $name (omit --temp or remove it)"
+  fi
+
+  if [ -n "$name" ] && container_exists "$name"; then
+    if [ "$shell" -eq 1 ]; then
+      "$CONTAINER_CMD" start "$name"
+      "$CONTAINER_CMD" exec -it "$name" bash
+    else
+      "$CONTAINER_CMD" start -i "$name"
+    fi
+    return 0
+  fi
+
+  local run_args=(-it)
+  local mount_arg="type=bind,src=$PWD,dst=/workdir"
+  if [ "$temp" -eq 1 ]; then
+    run_args+=(--rm)
+  elif [ -n "$name" ]; then
+    run_args+=(--name "$name")
+  fi
+  if [ -n "$cpu" ]; then
+    run_args+=(-c "$cpu")
+  fi
+  if [ -n "$mem" ]; then
+    run_args+=(-m "$mem")
+  fi
+
+  if [ "$shell" -eq 1 ]; then
+    "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" bash
+  else
+    "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image"
+  fi
+}
+
+run_openai() {
+  local name="$1"
+  local image="$2"
+  local temp="$3"
+  local shell="$4"
+  local auth="$5"
+  local cpu="$6"
+  local mem="$7"
+
+  [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
+
+  if [ -z "$name" ]; then
+    name="$(default_name "codex-openai-")"
+  fi
+
+  if [ "$auth" -eq 1 ] || ! ensure_keychain; then
+    run_auth_flow "$image" "$(default_name "codex-openai-auth-")"
+  fi
+
+  if container_running "$name"; then
+    if [ "$shell" -eq 1 ]; then
+      "$KEYCHAIN_SCRIPT" load-to-container "$name"
+      "$CONTAINER_CMD" exec -it "$name" bash
+      return 0
+    fi
+    echo "Container already running: $name"
+    echo "Use: codexctl exec --name \"$name\" -- codex --dangerously-bypass-approvals-and-sandbox"
+    return 0
+  fi
+
+  if ! container_exists "$name"; then
+    local create_args=()
+    if [ -n "$cpu" ]; then
+      create_args+=(-c "$cpu")
+    fi
+    if [ -n "$mem" ]; then
+      create_args+=(-m "$mem")
+    fi
+    "$CONTAINER_CMD" create -t \
+      "${create_args[@]}" \
+      --name "$name" \
+      --mount "type=bind,src=$PWD,dst=/workdir" \
+      "$image" sh -c 'sleep infinity'
+  fi
+
+  local started=0
+  "$CONTAINER_CMD" start "$name"
+  started=1
+  "$KEYCHAIN_SCRIPT" load-to-container "$name"
+  if [ "$shell" -eq 1 ]; then
+    "$CONTAINER_CMD" exec -it "$name" bash
+  else
+    "$CONTAINER_CMD" exec -it "$name" codex --dangerously-bypass-approvals-and-sandbox
+  fi
+  if [ "$started" -eq 1 ]; then
+    "$CONTAINER_CMD" stop "$name"
+  fi
+}
+
+run_cmd() {
+  local name=""
+  local image=""
+  local openai=0
+  local auth=0
+  local temp=0
+  local shell=0
+  local cpu=""
+  local mem=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --image) image="$2"; shift 2 ;;
+      --openai) openai=1; shift ;;
+      --auth) auth=1; shift ;;
+      --temp) temp=1; shift ;;
+      --shell) shell=1; shift ;;
+      --cpu) cpu="$2"; shift 2 ;;
+      --mem) mem="$2"; shift 2 ;;
+      --help) usage_run; return 0 ;;
+      *) die "Unknown option for run: $1" ;;
+    esac
+  done
+
+  require_container
+
+  if [ "$openai" -eq 1 ]; then
+    [ -n "$image" ] || image="codex-swift"
+    run_openai "$name" "$image" "$temp" "$shell" "$auth" "$cpu" "$mem"
+    return 0
+  fi
+
+  [ -n "$image" ] || image="codex"
+  if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
+    name="$(default_name "codex-")"
+  fi
+
+  run_local "$name" "$image" "$temp" "$shell" "$cpu" "$mem"
+}
+
+auth_cmd() {
+  local name=""
+  local image="codex-swift"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --image) image="$2"; shift 2 ;;
+      --help) usage_auth; return 0 ;;
+      *) die "Unknown option for auth: $1" ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "codex-openai-auth-")"
+  fi
+  run_auth_flow "$image" "$name"
+}
+
+exec_cmd() {
+  local name=""
+  local openai=0
+  local shell=0
+  local cmd=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --openai) openai=1; shift ;;
+      --shell) shell=1; shift ;;
+      --help) usage_exec; return 0 ;;
+      --) shift; cmd=("$@"); break ;;
+      *) die "Unknown option for exec: $1" ;;
+    esac
+  done
+
+  require_container
+
+  if [ -z "$name" ]; then
+    if [ "$openai" -eq 1 ]; then
+      name="$(default_name "codex-openai-")"
+    else
+      name="$(default_name "codex-")"
+    fi
+  fi
+
+  if [ "${#cmd[@]}" -eq 0 ]; then
+    cmd=(bash)
+  fi
+
+  if ! container_running "$name"; then
+    die "Container not running: $name"
+  fi
+
+  "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
+}
+
+simple_name_cmd() {
+  local action="$1"
+  shift
+  local name=""
+  local openai=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --openai) openai=1; shift ;;
+      --help) usage_simple_name; return 0 ;;
+      *) die "Unknown option: $1" ;;
+    esac
+  done
+
+  require_container
+
+  if [ -z "$name" ]; then
+    if [ "$openai" -eq 1 ]; then
+      name="$(default_name "codex-openai-")"
+    else
+      name="$(default_name "codex-")"
+    fi
+  fi
+
+  case "$action" in
+    start) "$CONTAINER_CMD" start -i "$name" ;;
+    stop) "$CONTAINER_CMD" stop "$name" ;;
+    restart) "$CONTAINER_CMD" restart "$name" ;;
+    rm) "$CONTAINER_CMD" rm "$name" ;;
+    *) die "Unknown action: $action" ;;
+  esac
+}
+
+ls_cmd() {
+  require_container
+  "$CONTAINER_CMD" ls -a
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  build) shift; build_cmd "$@" ;;
+  run) shift; run_cmd "$@" ;;
+  auth) shift; auth_cmd "$@" ;;
+  exec) shift; exec_cmd "$@" ;;
+  start|stop|restart|rm) shift; simple_name_cmd "$cmd" "$@" ;;
+  ls) shift; ls_cmd "$@" ;;
+  --help|-h|help|"") usage ;;
+  *) die "Unknown command: $cmd" ;;
+esac
