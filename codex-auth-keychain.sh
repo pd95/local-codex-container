@@ -9,6 +9,7 @@ usage() {
   echo "Usage:"
   echo "  $0 store-from-container <container> [path_in_container]"
   echo "  $0 load-to-container    <container> [path_in_container]"
+  echo "  $0 verify"
   exit 1
 }
 
@@ -68,5 +69,6 @@ cmd="${1:-}"
 case "$cmd" in
   store-from-container) [[ $# -ge 2 && $# -le 3 ]] || usage; store_from_container "$2" "${3:-}" ;;
   load-to-container) [[ $# -ge 2 && $# -le 3 ]] || usage; load_to_container "$2" "${3:-}" ;;
+  verify) security find-generic-password -a "$ACCOUNT_NAME" -s "$SERVICE_NAME" >/dev/null ;;
   *) usage ;;
 esac
