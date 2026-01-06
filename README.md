@@ -125,19 +125,26 @@ To start a `bash` within the same (running!) container, you can use
 container exec -it "my-codex" bash
 ```
 
-If you want to keep your session/chat history over multiple runs, do not remove the container after termination (=omit `--rm` argument and make sure you give it a unique name!):
+If you want to keep your session/chat history over multiple container restarts/runs, do not remove the container after termination (=omit `--rm` argument and make sure you give it a unique name – here derived from the current directory):
 
 ```bash
 container run -it --name "codex-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex
 ```
 
-Later you can start the container again:
+This is basically a shortcut for two commands below: create a new named container and start it (interactively)
+
+```bash
+container create -t --name "codex-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex
+container start -i "codex-`basename $PWD`"
+```
+
+After quitting the current session in the container using CTRL+D, you can start the container again:
 
 ```bash
 container start -i "codex-`basename $PWD`"
 ```
 
-To remove the old/unused container later:
+To remove the container later after you finished working with it, use the following command to remove of it:
 
 ```bash
 container rm "codex-`basename $PWD`"
