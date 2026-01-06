@@ -139,12 +139,15 @@ run_auth_flow() {
     die "Auth container already exists: $auth_name (remove it and retry)"
   fi
 
-  "$CONTAINER_CMD" run -it \
+  "$CONTAINER_CMD" create -t \
     --name "$auth_name" \
     --mount "type=bind,src=$PWD,dst=/workdir" \
-    "$image" bash -lc 'codex login --device-auth'
+    "$image" sh -c 'sleep infinity'
 
+  "$CONTAINER_CMD" start "$auth_name"
+  "$CONTAINER_CMD" exec -it "$auth_name" bash -lc 'codex login --device-auth'
   "$KEYCHAIN_SCRIPT" store-from-container "$auth_name"
+  "$CONTAINER_CMD" stop "$auth_name"
   "$CONTAINER_CMD" rm "$auth_name"
 }
 
