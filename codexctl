@@ -2,6 +2,7 @@
 set -euo pipefail
 
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
+DEFAULT_IMAGE="${DEFAULT_IMAGE:-codex}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
@@ -300,12 +301,12 @@ run_cmd() {
   require_container
 
   if [ "$openai" -eq 1 ]; then
-    [ -n "$image" ] || image="codex"
+    [ -n "$image" ] || image="$DEFAULT_IMAGE"
     run_openai "$name" "$image" "$temp" "$shell" "$auth" "$cpu" "$mem"
     return 0
   fi
 
-  [ -n "$image" ] || image="codex"
+  [ -n "$image" ] || image="$DEFAULT_IMAGE"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
     name="$(default_name "codex-")"
   fi
@@ -315,7 +316,7 @@ run_cmd() {
 
 auth_cmd() {
   local name=""
-  local image="codex"
+  local image="$DEFAULT_IMAGE"
 
   while [ $# -gt 0 ]; do
     case "$1" in
