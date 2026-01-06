@@ -230,7 +230,9 @@ run_openai() {
 
   if container_running "$name"; then
     if [ "$shell" -eq 1 ]; then
-      "$KEYCHAIN_SCRIPT" load-to-container "$name"
+      if ! "$CONTAINER_CMD" exec "$name" test -f /root/.codex/auth.json; then
+        "$KEYCHAIN_SCRIPT" load-to-container "$name"
+      fi
       "$CONTAINER_CMD" exec -it "$name" bash
       return 0
     fi
@@ -258,7 +260,9 @@ run_openai() {
   local started=0
   "$CONTAINER_CMD" start "$name"
   started=1
-  "$KEYCHAIN_SCRIPT" load-to-container "$name"
+  if ! "$CONTAINER_CMD" exec "$name" test -f /root/.codex/auth.json; then
+    "$KEYCHAIN_SCRIPT" load-to-container "$name"
+  fi
   if [ "$shell" -eq 1 ]; then
     "$CONTAINER_CMD" exec -it "$name" bash
   else
