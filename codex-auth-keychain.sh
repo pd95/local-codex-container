@@ -69,6 +69,13 @@ cmd="${1:-}"
 case "$cmd" in
   store-from-container) [[ $# -ge 2 && $# -le 3 ]] || usage; store_from_container "$2" "${3:-}" ;;
   load-to-container) [[ $# -ge 2 && $# -le 3 ]] || usage; load_to_container "$2" "${3:-}" ;;
-  verify) security find-generic-password -a "$ACCOUNT_NAME" -s "$SERVICE_NAME" >/dev/null ;;
+  verify)
+    if security find-generic-password -a "$ACCOUNT_NAME" -s "$SERVICE_NAME" >/dev/null; then
+      echo "Keychain item exists for $SERVICE_NAME"
+    else
+      echo "Keychain item missing for $SERVICE_NAME" >&2
+      exit 1
+    fi
+    ;;
   *) usage ;;
 esac
