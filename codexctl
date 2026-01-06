@@ -3,6 +3,9 @@ set -euo pipefail
 
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 DEFAULT_IMAGE="codex"
+DEFAULT_NAME_PREFIX="codex-"
+OPENAI_NAME_PREFIX="codex-openai-"
+AUTH_NAME_PREFIX="codex-openai-auth-"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
@@ -222,11 +225,11 @@ run_openai() {
   [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
 
   if [ -z "$name" ]; then
-    name="$(default_name "codex-openai-")"
+    name="$(default_name "$OPENAI_NAME_PREFIX")"
   fi
 
   if [ "$auth" -eq 1 ] || ! ensure_keychain; then
-    run_auth_flow "$image" "$(default_name "codex-openai-auth-")"
+    run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
   fi
 
   if container_running "$name"; then
@@ -308,7 +311,7 @@ run_cmd() {
 
   [ -n "$image" ] || image="$DEFAULT_IMAGE"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
-    name="$(default_name "codex-")"
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
   run_local "$name" "$image" "$temp" "$shell" "$cpu" "$mem"
@@ -329,7 +332,7 @@ auth_cmd() {
 
   require_container
   if [ -z "$name" ]; then
-    name="$(default_name "codex-openai-auth-")"
+    name="$(default_name "$AUTH_NAME_PREFIX")"
   fi
   run_auth_flow "$image" "$name"
 }
@@ -355,9 +358,9 @@ exec_cmd() {
 
   if [ -z "$name" ]; then
     if [ "$openai" -eq 1 ]; then
-      name="$(default_name "codex-openai-")"
+      name="$(default_name "$OPENAI_NAME_PREFIX")"
     else
-      name="$(default_name "codex-")"
+      name="$(default_name "$DEFAULT_NAME_PREFIX")"
     fi
   fi
 
@@ -391,9 +394,9 @@ simple_name_cmd() {
 
   if [ -z "$name" ]; then
     if [ "$openai" -eq 1 ]; then
-      name="$(default_name "codex-openai-")"
+      name="$(default_name "$OPENAI_NAME_PREFIX")"
     else
-      name="$(default_name "codex-")"
+      name="$(default_name "$DEFAULT_NAME_PREFIX")"
     fi
   fi
 
