@@ -217,6 +217,7 @@ run_openai() {
   local auth="$5"
   local cpu="$6"
   local mem="$7"
+  local create_args=()
 
   [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
 
@@ -240,7 +241,6 @@ run_openai() {
   fi
 
   if ! container_exists "$name"; then
-    local create_args=()
     if [ -n "$cpu" ]; then
       create_args+=(-c "$cpu")
     fi
