@@ -217,7 +217,6 @@ run_openai() {
   local auth="$5"
   local cpu="$6"
   local mem="$7"
-  local create_args=()
 
   [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
 
@@ -241,17 +240,19 @@ run_openai() {
   fi
 
   if ! container_exists "$name"; then
+    local create_cmd=("$CONTAINER_CMD" create -t)
     if [ -n "$cpu" ]; then
-      create_args+=(-c "$cpu")
+      create_cmd+=(-c "$cpu")
     fi
     if [ -n "$mem" ]; then
-      create_args+=(-m "$mem")
+      create_cmd+=(-m "$mem")
     fi
-    "$CONTAINER_CMD" create -t \
-      "${create_args[@]}" \
-      --name "$name" \
-      --mount "type=bind,src=$PWD,dst=/workdir" \
+    create_cmd+=(
+      --name "$name"
+      --mount "type=bind,src=$PWD,dst=/workdir"
       "$image" sh -c 'sleep infinity'
+    )
+    "${create_cmd[@]}"
   fi
 
   local started=0
