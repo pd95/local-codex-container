@@ -56,6 +56,8 @@ Quick start:
 ./codexctl run --shell
 ```
 
+Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
+
 Other useful commands:
 
 ```bash
