@@ -58,6 +58,14 @@ Quick start:
 
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
 
+Configuration tweaks:
+
+- `codexctl` exposes a few top-level constants that are meant to be edited directly:
+  - `DEFAULT_IMAGE` (default image for `run` and `auth`)
+  - `DEFAULT_NAME_PREFIX` (default local container prefix)
+  - `OPENAI_NAME_PREFIX` (default OpenAI container prefix)
+  - `AUTH_NAME_PREFIX` (default auth container prefix)
+
 Other useful commands:
 
 ```bash
