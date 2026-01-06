@@ -236,8 +236,7 @@ run_openai() {
       "$CONTAINER_CMD" exec -it "$name" bash
       return 0
     fi
-    echo "Container already running: $name"
-    echo "Use: codexctl exec --openai -- codex --dangerously-bypass-approvals-and-sandbox"
+    "$CONTAINER_CMD" exec -it "$name" codex --dangerously-bypass-approvals-and-sandbox
     return 0
   fi
 
