@@ -12,6 +12,7 @@ Create a single bash script (approach A) that manages creation/running/restartin
 1) `codexctl` shell script with subcommands.
 2) Enhanced `codex-auth-keychain.sh` with a `verify` subcommand.
 3) Help text and examples.
+4) Commit work in small, reviewable chunks with descriptive messages.
 
 ## CLI Shape (proposed)
 - `codexctl build` — build images from Dockerfiles.
