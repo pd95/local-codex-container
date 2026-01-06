@@ -33,7 +33,53 @@ ollama pull gpt-oss:20b
 container system start
 ```
 
-## Build codex container images
+## Use `codexctl` (recommended)
+
+`codexctl` is the entry point for running Codex containers. It wraps the Apple `container` CLI, handles naming, and automates OpenAI device-auth when requested.
+
+Quick start:
+
+```bash
+# Build images once
+./codexctl build
+
+# Run Codex for the current directory (persistent by default)
+./codexctl run
+
+# Throwaway session
+./codexctl run --temp
+
+# OpenAI mode (auto-auth if needed)
+./codexctl run --openai
+
+# Start a shell inside the container
+./codexctl run --shell
+```
+
+Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
+
+Configuration tweaks:
+
+- `codexctl` exposes a few top-level constants that are meant to be edited directly:
+  - `DEFAULT_IMAGE` (default image for `run` and `auth`)
+  - `DEFAULT_NAME_PREFIX` (default local container prefix)
+  - `OPENAI_NAME_PREFIX` (default OpenAI container prefix)
+  - `AUTH_NAME_PREFIX` (default auth container prefix)
+
+Other useful commands:
+
+```bash
+./codexctl auth              # only run device-auth and store in Keychain
+./codexctl exec --shell      # shell into running container
+./codexctl ls                # list containers
+./codexctl rm                # remove the default container for this directory
+```
+
+The rest of this README explains what `codexctl` does behind the scenes and how to run the underlying `container` commands directly.
+
+## Behind the scenes
+
+### Build codex container images
 
 To build the codex container images for later use, I have written three `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
 
@@ -53,7 +99,7 @@ container build -t codex-python -f DockerFile.python
 container build -t codex-swift -f DockerFile.swift
 ```
 
-## Network configuration
+### Network configuration
 
 By default, Ollama is only listening on localhost connections, i.e. on <http://localhost:11434> or <http://127.0.0.1:11434>. To be able to connect from a container (through a virtual network) to the Ollama service running on localhost, we have two options:
 
@@ -105,7 +151,7 @@ swift build
 HOST=192.168.64.1 PORT=11434 swift run
 ```
 
-## Run a codex container in the current directory
+### Run a codex container in the current directory
 
 The following command runs a "throwaway" `codex` container with the current directory as 'workdir'
 
@@ -162,7 +208,7 @@ If you want to run more CPU and memory hungry builds within the codex container,
 container run -it -c 6 -m 8G --name "codex-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex
 ```
 
-## Running OpenAI models in an isolated container
+### Running OpenAI models in an isolated container
 
 If you really want to connect to an OpenAI model, you have to connect codex within the container to OpenAI using either an API key or a device key. This means, you have to preserve the configuration within the container.
 
@@ -204,7 +250,7 @@ Remove the container to destroy the device configuration
 container rm "codex-openai-`basename $PWD`"
 ```
 
-### Store auth.json in macOS Keychain
+#### Store auth.json in macOS Keychain
 
 After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/root/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
 
