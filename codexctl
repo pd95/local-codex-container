@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
-DEFAULT_IMAGE="${DEFAULT_IMAGE:-codex}"
+DEFAULT_IMAGE="codex"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
