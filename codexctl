@@ -69,7 +69,7 @@ Usage: codexctl run [options]
 
 Options:
   --name NAME     Container name (default: codex-<dir> or codex-openai-<dir>)
-  --image NAME    Image to use (default: codex or codex-swift with --openai)
+  --image NAME    Image to use (default: codex)
   --openai        Use OpenAI mode (device auth + codex bypass)
   --auth          Force OpenAI login flow
   --temp          Create a throwaway container (--rm)
@@ -85,7 +85,7 @@ Usage: codexctl auth [options]
 
 Options:
   --name NAME   Auth container name (default: codex-openai-auth-<dir>)
-  --image NAME  Image to use (default: codex-swift)
+  --image NAME  Image to use (default: codex)
 EOF
 }
 
@@ -301,7 +301,7 @@ run_cmd() {
   require_container
 
   if [ "$openai" -eq 1 ]; then
-    [ -n "$image" ] || image="codex-swift"
+    [ -n "$image" ] || image="codex"
     run_openai "$name" "$image" "$temp" "$shell" "$auth" "$cpu" "$mem"
     return 0
   fi
@@ -316,7 +316,7 @@ run_cmd() {
 
 auth_cmd() {
   local name=""
-  local image="codex-swift"
+  local image="codex"
 
   while [ $# -gt 0 ]; do
     case "$1" in
