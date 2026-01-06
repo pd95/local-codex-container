@@ -269,7 +269,7 @@ run_openai() {
     "$CONTAINER_CMD" exec -it "$name" codex --dangerously-bypass-approvals-and-sandbox
   fi
   if [ "$started" -eq 1 ]; then
-    "$CONTAINER_CMD" stop "$name"
+    "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
   fi
 }
 
