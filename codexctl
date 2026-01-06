@@ -4,6 +4,7 @@ set -euo pipefail
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
+DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
 
 die() {
   echo "Error: $*" >&2
@@ -168,8 +169,7 @@ run_local() {
     if [ "$shell" -eq 1 ]; then
       "$CONTAINER_CMD" exec -it "$name" bash
     else
-      echo "Container already running: $name"
-      echo "Use: codexctl exec --name \"$name\""
+      "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
     fi
     return 0
   fi
