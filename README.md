@@ -2,7 +2,7 @@
 
 **Run Codex AI locally on macOS, powered by Ollama**
 
-This repository is combining multiple Open Source tools to run an agentic AI safely and privately on a Mac.
+This repository combines multiple open-source tools to run an agentic AI safely and privately on a Mac.
 
 It runs OpenAI's [Codex CLI](https://github.com/openai/codex) on your Mac using Apple's Containerization tool, connecting to the locally running Ollama instance.
 
@@ -37,55 +37,67 @@ container system start
 
 `codexctl` is the entry point for running Codex containers. It wraps the Apple `container` CLI, handles naming, and automates OpenAI device-auth when requested.
 
-Quick start:
+The basic idea is to start a container in the directory where your sources and/or documents are located. The container ensures that `codex` can only access files in the current directory tree (this directory and its subdirectories), but still the container contains many development tools `codex` needs to be useful/efficient in its work.
+
+By installing `codexctl` somewhere in your system PATH (e.g. /usr/local/bin/ or better privately in ~/bin/), you can run a codex container in any directory you currently work, as easy as running `codexctl run`.
+
+```bash
+chmod 700 codexctl                            # restrict it to your user
+sudo ln -s "$PWD/codexctl" /usr/local/bin/    # link it to system directory
+```
+
+### Quick start
 
 ```bash
 # Build images once
-./codexctl build
+codexctl build
 
 # Run Codex for the current directory (persistent by default)
-./codexctl run
+codexctl run
 
 # Throwaway session
-./codexctl run --temp
+codexctl run --temp
 
 # OpenAI mode (auto-auth if needed)
-./codexctl run --openai
+codexctl run --openai
 
 # Start a shell inside the container
-./codexctl run --shell
+codexctl run --shell
 
 # Run a custom command (must be last)
-./codexctl run --cmd bash
+codexctl run --cmd bash
 ```
 
-Note: `--cmd` consumes the remaining arguments and cannot be combined with `--shell`, so place it last. If you pass a single quoted string containing spaces, it runs via `CODEX_SHELL -lc`. This same behavior applies to `codexctl exec`.
-Note: `CODEX_SHELL` overrides the default shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
+Note: `--cmd` consumes the remaining arguments and cannot be combined with `--shell`, so place it last. If you pass a single quoted string containing spaces, it runs via `$CODEX_SHELL -lc`. This same behavior applies to `codexctl exec`.
+
+Note: `CODEX_SHELL` is an environment variable to override the default shell used by `run --shell` and `exec` (default is `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
 
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
 
-Configuration tweaks:
+### Configuration tweaks
 
 `codexctl` exposes a few top-level constants (in `codexctl`) that you can edit to adjust default behavior:
-  - `DEFAULT_IMAGE` (default image for `run` and `auth`)
-  - `DEFAULT_NAME_PREFIX` (default local container prefix)
-  - `AUTH_NAME_PREFIX` (default auth container prefix)
-  - `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
-  - `DEFAULT_CODEX_PROFILE` (default profile passed to codex in local mode)
-  - `DEFAULT_CODEX_CMD` (base codex command/flags used when launching codex)
 
-Other useful commands:
+- `DEFAULT_IMAGE` (default image for `run` and `auth`)
+- `DEFAULT_NAME_PREFIX` (default local container prefix)
+- `AUTH_NAME_PREFIX` (default auth container prefix)
+- `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
+- `DEFAULT_CODEX_PROFILE` (default profile passed to codex in local mode)
+- `DEFAULT_CODEX_CMD` (base codex command/flags used when launching codex)
+
+### Other useful commands
 
 ```bash
-./codexctl auth              # only run device-auth and store in Keychain
-./codexctl exec              # shell into running container
-./codexctl ls                # list containers
-./codexctl rm                # remove the default container for this directory
+codexctl auth              # only run device-auth and store in Keychain
+codexctl exec              # shell into running container
+codexctl ls                # list containers
+codexctl rm                # remove the default container for this directory
 ```
 
 Notes:
+
 - `--auth` only works together with `--openai`.
 - `--temp` creates a disposable container that is removed after the command exits.
 - `--openai --temp` still injects Keychain auth before running the command.
@@ -102,11 +114,11 @@ To build the codex container images for later use, I have written three `DockerF
 - `DockerFile.python` for a Alpine based Python installation (~330 MB)
 - `DockerFile.swift` for an Ubuntu based Swift installation (~1.68 GB)
 
-The image build process is using `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container users identifier when interacting with git and to use `main` as the default branch when initializing a new repository.
+The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
-Further the build process is going to copy the `config.toml` file into the container at `~/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` networks host IP address 192.168.64.1.
+Further the build process is going to copy the `config.toml` file into the container at `~/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address 192.168.64.1.
 
-Use the following `container` commands to build the codex containers `codex`, `codex-python` and `codex-swift` from the corresponding `DockerFile` source:
+Use the following `container` commands to build the codex images `codex`, `codex-python` and `codex-swift` from the corresponding `DockerFile`:
 
 ```bash
 container build -t codex -f DockerFile
@@ -134,12 +146,16 @@ You should consider stopping the service on such networks!
 
 Instead of using the GUI setting within Ollama you can launch a second Ollama service listening only on the virtual network interface using the following command:
 
-    OLLAMA_HOST=192.168.64.1 ollama serve
+```bash
+OLLAMA_HOST=192.168.64.1 ollama serve
+```
 
-⚠️ Be aware: This command only works when a container is already running! (see next chapter).  
+⚠️ Be aware: This command only works when a container is already running! (see "Run a codex container in the current directory").  
 Otherwise you will get the following error:
 
-    Error: listen tcp 192.168.64.1:11434: bind: can't assign requested address
+```log
+Error: listen tcp 192.168.64.1:11434: bind: can't assign requested address
+```
 
 ### Option 3: Proxy service connecting virtual network to localhost
 
@@ -155,7 +171,7 @@ This can be done using `socat` (install with `brew install socat`):
 socat TCP-LISTEN:11434,fork,bind=192.168.64.1 TCP:127.0.0.1:11434
 ```
 
-⚠️ This command only works when a container is already running! (see next chapter). Otherwise you will get the following error:
+⚠️ This command only works when a container is already running! (see "Run a codex container in the current directory"). Otherwise you will get the following error:
 
 ```bash
 socat[12345] E bind(5, {LEN=16 AF=2 192.168.64.1:11434}, 16): Can't assign requested address
@@ -211,7 +227,7 @@ After quitting the current session in the container using CTRL+D, you can start 
 container start -i "codex-`basename $PWD`"
 ```
 
-To remove the container later after you finished working with it, use the following command to remove of it:
+To remove the container later after you finished working with it, use the following command to remove it:
 
 ```bash
 container rm "codex-`basename $PWD`"
@@ -241,19 +257,19 @@ Basically we will create a container keeping the configuration around (auth.json
     container run -it --name "codex-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex-swift bash
     ```
 
-2. Within the containers shell login to codex using device auth:
+2. Within the container's shell, log in to codex using device auth:
 
     ```bash
     codex login --device-auth
     ```
 
-3. After successfull login you can launch codex using the OpenAI models:
+3. After successful login you can launch codex using the OpenAI models:
 
    ```bash
    codex --dangerously-bypass-approvals-and-sandbox
    ```
 
-To restart the container later again, start the container:
+To restart the container later, start the container:
 
 ```bash
 container start -i "codex-`basename $PWD`" 
@@ -265,7 +281,7 @@ and launch:
 codex --dangerously-bypass-approvals-and-sandbox
 ```
 
-Remove the container to destroy the device configuration
+Remove the container to destroy the device configuration:
 
 ```bash
 container rm "codex-`basename $PWD`"
@@ -276,15 +292,16 @@ container rm "codex-`basename $PWD`"
 After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/root/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
 
 ```bash
-./codex-auth-keychain.sh store-from-container "codex-`basename $PWD`"
+codex-auth-keychain.sh store-from-container "codex-`basename $PWD`"
 ```
 
 If you created a fresh container and want to restore the authorization from the Keychain, use:
 
 ```bash
-./codex-auth-keychain.sh load-to-container "codex-`basename $PWD`"
+codex-auth-keychain.sh load-to-container "codex-`basename $PWD`"
 ```
 
 Notes:
+
 - The container must be running for both commands.
 - The default path is `/root/.codex/auth.json` unless you pass an explicit path.
