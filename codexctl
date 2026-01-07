@@ -127,7 +127,7 @@ build_cmd() {
   local rebuild=0
   local refresh_base=0
   local pull_base=0
-  local build_args=()
+  local no_cache=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) image="$2"; shift 2 ;;
@@ -141,7 +141,7 @@ build_cmd() {
 
   require_container
   if [ "$rebuild" -eq 1 ]; then
-    build_args+=(--no-cache)
+    no_cache="--no-cache"
   fi
   remove_image() {
     local name="$1"
@@ -187,7 +187,11 @@ build_cmd() {
     if [ "$pull_base" -eq 1 ]; then
       pull_base_image "$file"
     fi
-    "$CONTAINER_CMD" build -t "$name" -f "$file" "${build_args[@]}"
+    if [ -n "$no_cache" ]; then
+      "$CONTAINER_CMD" build -t "$name" -f "$file" "$no_cache"
+    else
+      "$CONTAINER_CMD" build -t "$name" -f "$file"
+    fi
   }
   case "$image" in
     "") build_one codex DockerFile
