@@ -5,6 +5,7 @@ CONTAINER_CMD="${CONTAINER_CMD:-container}"
 DEFAULT_IMAGE="codex"
 DEFAULT_NAME_PREFIX="codex-"
 AUTH_NAME_PREFIX="codex-openai-auth-"
+DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="gpt-oss"
 DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox)
 
@@ -100,12 +101,13 @@ usage_run() {
 Usage: codexctl run [options]
 
 Options:
-  --name NAME     Container name (default: codex-<dir> or codex-openai-<dir>)
+  --name NAME     Container name (default: codex-<dir>)
   --image NAME    Image to use (default: codex)
-  --openai        Use OpenAI mode (device auth + codex bypass)
+  --openai        Use OpenAI mode (device auth)
   --auth          Force OpenAI login flow
-  --temp          Create a throwaway container (--rm)
-  --shell         Start a shell (bash) instead of default CMD
+  --temp          Create a throwaway container (auto-removed after exit)
+  --shell         Start a shell (default shell) instead of default CMD
+  --cmd ...       Run a custom command (must be last; cannot combine with --shell)
   --cpu NUM       CPU cores for container
   --mem SIZE      Memory limit (e.g. 8G)
 EOF
@@ -123,18 +125,18 @@ EOF
 
 usage_exec() {
   cat <<'EOF'
-Usage: codexctl exec [options] [-- command...]
+Usage: codexctl exec [options] [command...]
 
 Options:
-  --name NAME  Container name (default: codex-<dir> or codex-openai-<dir>)
-  --openai     Use OpenAI name prefix
-  --shell      Run bash (default)
+  --name NAME  Container name (default: codex-<dir>)
+
+If no command is provided, exec runs the default shell.
 EOF
 }
 
 usage_simple_name() {
   cat <<'EOF'
-Usage: codexctl <start|stop|restart|rm> [--name NAME] [--openai]
+Usage: codexctl <start|stop|restart|rm> [--name NAME]
 EOF
 }
 
@@ -260,125 +262,110 @@ run_container() {
   local pre_exec="$7"
   shift 7
   local cmd=("$@")
+  local exit_code=0
   local started=0
+  local already_running=0
+  local actual_name="$name"
 
-  if [ -n "$name" ] && container_running "$name"; then
-    if [ -n "$pre_exec" ]; then
-      "$pre_exec" "$name"
-    fi
+  # Execute command inside the container and preserve the exit code.
+  run_exec() {
     if [ "$shell" -eq 1 ]; then
-      "$CONTAINER_CMD" exec -it "$name" bash
+      if ! "$CONTAINER_CMD" exec -it "$actual_name" "$DEFAULT_SHELL"; then
+        exit_code=$?
+      fi
     else
-      "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
+      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${cmd[@]}"; then
+        exit_code=$?
+      fi
     fi
-    return 0
-  fi
+  }
 
-  if [ -n "$name" ] && [ "$temp" -eq 1 ] && container_exists "$name"; then
-    die "Container already exists: $name (omit --temp or remove it)"
-  fi
-
-  if [ -n "$name" ] && container_exists "$name"; then
-    "$CONTAINER_CMD" start "$name"
-    started=1
-    if [ -n "$pre_exec" ]; then
-      "$pre_exec" "$name"
-    fi
-    if [ "$shell" -eq 1 ]; then
-      "$CONTAINER_CMD" exec -it "$name" bash
-    else
-      "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
-    fi
-    if [ "$started" -eq 1 ]; then
-      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
-    fi
-    return 0
-  fi
-
-  local run_args=(-it)
-  local mount_arg="type=bind,src=$PWD,dst=/workdir"
-  if [ "$temp" -eq 1 ]; then
-    run_args+=(--rm)
-  elif [ -n "$name" ]; then
-    run_args+=(--name "$name")
-  fi
-  if [ -n "$cpu" ]; then
-    run_args+=(-c "$cpu")
-  fi
-  if [ -n "$mem" ]; then
-    run_args+=(-m "$mem")
-  fi
-
-  if [ "$temp" -eq 1 ]; then
-    if [ "$shell" -eq 1 ]; then
-      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" bash
-    else
-      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" "${cmd[@]}"
-    fi
-    return 0
-  fi
-
-  local create_cmd=("$CONTAINER_CMD" create -t)
-  if [ -n "$cpu" ]; then
-    create_cmd+=(-c "$cpu")
-  fi
-  if [ -n "$mem" ]; then
-    create_cmd+=(-m "$mem")
-  fi
-  create_cmd+=(
-    --name "$name"
-    --mount "$mount_arg"
-    "$image" sh -c 'sleep infinity'
-  )
-  "${create_cmd[@]}"
-  "$CONTAINER_CMD" start "$name"
-  started=1
-  if [ -n "$pre_exec" ]; then
-    "$pre_exec" "$name"
-  fi
-  if [ "$shell" -eq 1 ]; then
-    "$CONTAINER_CMD" exec -it "$name" bash
+  # Lifecycle: create if missing, start if needed, pre_exec, exec, stop, remove if temp.
+  if [ -n "$actual_name" ] && container_running "$actual_name"; then
+    already_running=1
   else
-    "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
+    if [ -n "$actual_name" ] && [ "$temp" -eq 1 ] && container_exists "$actual_name"; then
+      die "Container already exists: $actual_name (omit --temp or remove it)"
+    fi
+    if [ "$temp" -eq 0 ] && [ -z "$actual_name" ]; then
+      die "Missing container name"
+    fi
+
+    if [ -z "$actual_name" ] || ! container_exists "$actual_name"; then
+      echo "Creating container..." >&2
+      local create_cmd=("$CONTAINER_CMD" create -t)
+      if [ -n "$cpu" ]; then
+        create_cmd+=(-c "$cpu")
+      fi
+      if [ -n "$mem" ]; then
+        create_cmd+=(-m "$mem")
+      fi
+      if [ -n "$actual_name" ]; then
+        create_cmd+=(--name "$actual_name")
+      fi
+      create_cmd+=(
+        --mount "type=bind,src=$PWD,dst=/workdir"
+        "$image" sh -c 'sleep infinity'
+      )
+      if [ -z "$actual_name" ]; then
+        actual_name="$("${create_cmd[@]}")"
+        [ -n "$actual_name" ] || die "Failed to create temporary container"
+      else
+        "${create_cmd[@]}"
+      fi
+    fi
+
+    echo "Starting container: $actual_name" >&2
+    "$CONTAINER_CMD" start "$actual_name"
+    started=1
+  fi
+
+  if [ -n "$pre_exec" ]; then
+    "$pre_exec" "$actual_name"
+  fi
+  run_exec
+  if [ "$already_running" -eq 1 ]; then
+    return "$exit_code"
   fi
   if [ "$started" -eq 1 ]; then
-    "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
+    echo "Stopping container: $actual_name" >&2
+    "$CONTAINER_CMD" stop "$actual_name" >/dev/null 2>&1
   fi
+  if [ "$temp" -eq 1 ]; then
+    echo "Removing container: $actual_name" >&2
+    "$CONTAINER_CMD" rm "$actual_name" >/dev/null 2>&1
+  fi
+  return "$exit_code"
 }
 
-run_local() {
+run_mode() {
   local name="$1"
   local image="$2"
   local temp="$3"
   local shell="$4"
-  local cpu="$5"
-  local mem="$6"
+  local openai="$5"
+  local auth="$6"
+  local cpu="$7"
+  local mem="$8"
+  shift 8
+  local -a cmd_override=("$@")
+  local pre_exec=""
   local cmd=("${DEFAULT_CODEX_CMD[@]}" --profile "$DEFAULT_CODEX_PROFILE")
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "" "${cmd[@]}"
-}
-
-run_openai() {
-  local name="$1"
-  local image="$2"
-  local temp="$3"
-  local shell="$4"
-  local auth="$5"
-  local cpu="$6"
-  local mem="$7"
-
-  [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
-
-  if [ -z "$name" ]; then
-    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  if [ "$openai" -eq 1 ]; then
+    pre_exec="openai_pre_exec"
+    cmd=("${DEFAULT_CODEX_CMD[@]}")
+    if [ "$auth" -eq 1 ] || ! ensure_keychain; then
+      run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
+    fi
   fi
 
-  if [ "$auth" -eq 1 ] || ! ensure_keychain; then
-    run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
+  if [ "${#cmd_override[@]}" -gt 0 ]; then
+    cmd=("${cmd_override[@]}")
+    shell=0
   fi
-  local cmd=("${DEFAULT_CODEX_CMD[@]}")
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" openai_pre_exec "${cmd[@]}"
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$pre_exec" "${cmd[@]}"
 }
 
 openai_pre_exec() {
@@ -397,6 +384,9 @@ run_cmd() {
   local shell=0
   local cpu=""
   local mem=""
+  local -a cmd_override=()
+  local cmd_override_set=0
+  local shell_set=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -405,7 +395,8 @@ run_cmd() {
       --openai) openai=1; shift ;;
       --auth) auth=1; shift ;;
       --temp) temp=1; shift ;;
-      --shell) shell=1; shift ;;
+      --shell) shell=1; shell_set=1; shift ;;
+      --cmd) shift; cmd_override_set=1; cmd_override=("$@"); break ;;
       --cpu) cpu="$2"; shift 2 ;;
       --mem) mem="$2"; shift 2 ;;
       --help) usage_run; return 0 ;;
@@ -414,11 +405,19 @@ run_cmd() {
   done
 
   require_container
-
-  if [ "$openai" -eq 1 ]; then
-    [ -n "$image" ] || image="$DEFAULT_IMAGE"
-    run_openai "$name" "$image" "$temp" "$shell" "$auth" "$cpu" "$mem"
-    return 0
+  if [ "$shell_set" -eq 1 ] && [ "$cmd_override_set" -eq 1 ]; then
+    die "Cannot combine --shell with --cmd"
+  fi
+  if [ "$cmd_override_set" -eq 1 ] && [ "${#cmd_override[@]}" -eq 0 ]; then
+    die "Missing command after --cmd"
+  fi
+  if [ "$cmd_override_set" -eq 1 ] && [ "${#cmd_override[@]}" -eq 1 ]; then
+    case "${cmd_override[0]}" in
+      *[[:space:]]*) cmd_override=("$DEFAULT_SHELL" "-lc" "${cmd_override[0]}") ;;
+    esac
+  fi
+  if [ "$auth" -eq 1 ] && [ "$openai" -eq 0 ]; then
+    die "--auth requires --openai"
   fi
 
   [ -n "$image" ] || image="$DEFAULT_IMAGE"
@@ -426,7 +425,7 @@ run_cmd() {
     name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
-  run_local "$name" "$image" "$temp" "$shell" "$cpu" "$mem"
+  run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$cpu" "$mem" ${cmd_override[@]+"${cmd_override[@]}"}
 }
 
 auth_cmd() {
@@ -451,18 +450,15 @@ auth_cmd() {
 
 exec_cmd() {
   local name=""
-  local openai=0
-  local shell=0
   local cmd=()
 
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) name="$2"; shift 2 ;;
-      --openai) openai=1; shift ;;
-      --shell) shell=1; shift ;;
       --help) usage_exec; return 0 ;;
       --) shift; cmd=("$@"); break ;;
-      *) die "Unknown option for exec: $1" ;;
+      --*) die "Unknown option for exec: $1" ;;
+      *) cmd=("$@"); break ;;
     esac
   done
 
@@ -473,7 +469,12 @@ exec_cmd() {
   fi
 
   if [ "${#cmd[@]}" -eq 0 ]; then
-    cmd=(bash)
+    cmd=("$DEFAULT_SHELL")
+  fi
+  if [ "${#cmd[@]}" -eq 1 ]; then
+    case "${cmd[0]}" in
+      *[[:space:]]*) cmd=("$DEFAULT_SHELL" "-lc" "${cmd[0]}") ;;
+    esac
   fi
 
   if ! container_running "$name"; then

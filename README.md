@@ -54,7 +54,13 @@ Quick start:
 
 # Start a shell inside the container
 ./codexctl run --shell
+
+# Run a custom command (must be last)
+./codexctl run --cmd bash
 ```
+
+Note: `--cmd` consumes the remaining arguments and cannot be combined with `--shell`, so place it last. If you pass a single quoted string containing spaces, it runs via `CODEX_SHELL -lc`. This same behavior applies to `codexctl exec`.
+Note: `CODEX_SHELL` overrides the default shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
 
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
@@ -62,20 +68,27 @@ Note: `codexctl` was authored by Codex itself, running inside an Apple `containe
 
 Configuration tweaks:
 
-- `codexctl` exposes a few top-level constants that are meant to be edited directly:
+`codexctl` exposes a few top-level constants (in `codexctl`) that you can edit to adjust default behavior:
   - `DEFAULT_IMAGE` (default image for `run` and `auth`)
   - `DEFAULT_NAME_PREFIX` (default local container prefix)
-  - `OPENAI_NAME_PREFIX` (default OpenAI container prefix)
   - `AUTH_NAME_PREFIX` (default auth container prefix)
+  - `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
+  - `DEFAULT_CODEX_PROFILE` (default profile passed to codex in local mode)
+  - `DEFAULT_CODEX_CMD` (base codex command/flags used when launching codex)
 
 Other useful commands:
 
 ```bash
 ./codexctl auth              # only run device-auth and store in Keychain
-./codexctl exec --shell      # shell into running container
+./codexctl exec              # shell into running container
 ./codexctl ls                # list containers
 ./codexctl rm                # remove the default container for this directory
 ```
+
+Notes:
+- `--auth` only works together with `--openai`.
+- `--temp` creates a disposable container that is removed after the command exits.
+- `--openai --temp` still injects Keychain auth before running the command.
 
 The rest of this README explains what `codexctl` does behind the scenes and how to run the underlying `container` commands directly.
 
@@ -225,7 +238,7 @@ Basically we will create a container keeping the configuration around (auth.json
 1. Create the desired container, launching bash upon start:
 
     ```bash
-    container run -it --name "codex-openai-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex-swift bash
+    container run -it --name "codex-`basename $PWD`" --mount type=bind,src="$(pwd)",dst=/workdir codex-swift bash
     ```
 
 2. Within the containers shell login to codex using device auth:
@@ -243,7 +256,7 @@ Basically we will create a container keeping the configuration around (auth.json
 To restart the container later again, start the container:
 
 ```bash
-container start -i "codex-openai-`basename $PWD`" 
+container start -i "codex-`basename $PWD`" 
 ```
 
 and launch:
@@ -255,7 +268,7 @@ codex --dangerously-bypass-approvals-and-sandbox
 Remove the container to destroy the device configuration
 
 ```bash
-container rm "codex-openai-`basename $PWD`"
+container rm "codex-`basename $PWD`"
 ```
 
 #### Store auth.json in macOS Keychain
@@ -263,13 +276,13 @@ container rm "codex-openai-`basename $PWD`"
 After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/root/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
 
 ```bash
-./codex-auth-keychain.sh store-from-container "codex-openai-`basename $PWD`"
+./codex-auth-keychain.sh store-from-container "codex-`basename $PWD`"
 ```
 
 If you created a fresh container and want to restore the authorization from the Keychain, use:
 
 ```bash
-./codex-auth-keychain.sh load-to-container "codex-openai-`basename $PWD`"
+./codex-auth-keychain.sh load-to-container "codex-`basename $PWD`"
 ```
 
 Notes:
