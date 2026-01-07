@@ -104,8 +104,8 @@ container build -t codex-swift -f DockerFile.swift
 #### Build cache behavior (codexctl)
 
 - `--rebuild` disables Dockerfile layer cache (`--no-cache`). Use when Codex warns you about an outdated version and you want all new containers to start from a fresh image.
-- `--refresh-base` deletes the base image first, forcing a re-fetch on build. Use when you want to pick up newer Alpine/Python/Swift base images.
-- `--pull-base` pulls the latest base image tag before building. Use when you want to update base images without deleting them first.
+- `--pull-base` pulls the latest base image tag before building. Use when you want to update base images without deleting them first (preferred).
+- `--refresh-base` deletes the base image first, forcing a re-fetch on build. Use when you need a brute-force refresh; this may fail if the base image is still referenced by containers.
 
 ### Network configuration
 

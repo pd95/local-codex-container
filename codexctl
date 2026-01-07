@@ -69,13 +69,13 @@ EOF
 
 usage_build() {
   cat <<'EOF'
-Usage: codexctl build [--image NAME] [--rebuild] [--refresh-base] [--pull-base]
+Usage: codexctl build [--image NAME] [--rebuild] [--pull-base] [--refresh-base]
 
 Options:
   --image NAME  One of: codex, codex-python, codex-swift (default: all)
   --rebuild     Rebuild images even if they already exist (disables build cache)
-  --refresh-base  Remove the base image first so it is re-fetched
   --pull-base     Pull the base image before building
+  --refresh-base  Remove the base image first so it is re-fetched
 EOF
 }
 
