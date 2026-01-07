@@ -257,6 +257,7 @@ run_local() {
   local shell="$4"
   local cpu="$5"
   local mem="$6"
+  local started=0
 
   if [ -n "$name" ] && container_running "$name"; then
     if [ "$shell" -eq 1 ]; then
@@ -272,11 +273,15 @@ run_local() {
   fi
 
   if [ -n "$name" ] && container_exists "$name"; then
+    "$CONTAINER_CMD" start "$name"
+    started=1
     if [ "$shell" -eq 1 ]; then
-      "$CONTAINER_CMD" start "$name"
       "$CONTAINER_CMD" exec -it "$name" bash
     else
-      "$CONTAINER_CMD" start -i "$name"
+      "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
+    fi
+    if [ "$started" -eq 1 ]; then
+      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
     fi
     return 0
   fi
@@ -295,10 +300,37 @@ run_local() {
     run_args+=(-m "$mem")
   fi
 
+  if [ "$temp" -eq 1 ]; then
+    if [ "$shell" -eq 1 ]; then
+      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" bash
+    else
+      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image"
+    fi
+    return 0
+  fi
+
+  local create_cmd=("$CONTAINER_CMD" create -t)
+  if [ -n "$cpu" ]; then
+    create_cmd+=(-c "$cpu")
+  fi
+  if [ -n "$mem" ]; then
+    create_cmd+=(-m "$mem")
+  fi
+  create_cmd+=(
+    --name "$name"
+    --mount "$mount_arg"
+    "$image" sh -c 'sleep infinity'
+  )
+  "${create_cmd[@]}"
+  "$CONTAINER_CMD" start "$name"
+  started=1
   if [ "$shell" -eq 1 ]; then
-    "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" bash
+    "$CONTAINER_CMD" exec -it "$name" bash
   else
-    "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image"
+    "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
+  fi
+  if [ "$started" -eq 1 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
   fi
 }
 
