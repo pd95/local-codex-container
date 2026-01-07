@@ -6,9 +6,25 @@ DEFAULT_IMAGE="codex"
 DEFAULT_NAME_PREFIX="codex-"
 OPENAI_NAME_PREFIX="codex-openai-"
 AUTH_NAME_PREFIX="codex-openai-auth-"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
+
+resolve_script_path() {
+  local path="$1"
+  while [ -L "$path" ]; do
+    local target
+    target="$(readlink "$path")"
+    if [[ "$target" != /* ]]; then
+      path="$(CDPATH= cd -- "$(dirname -- "$path")" && pwd)/$target"
+    else
+      path="$target"
+    fi
+  done
+  echo "$path"
+}
+
+SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 
 die() {
   echo "Error: $*" >&2
@@ -177,20 +193,22 @@ build_cmd() {
   build_one() {
     local name="$1"
     local file="$2"
+    local file_path="$SCRIPT_DIR/$file"
+    local context="$SCRIPT_DIR"
     if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
       echo "Image already exists: $name (use --rebuild to rebuild)"
       return 0
     fi
     if [ "$refresh_base" -eq 1 ]; then
-      refresh_base_image "$file"
+      refresh_base_image "$file_path"
     fi
     if [ "$pull_base" -eq 1 ]; then
-      pull_base_image "$file"
+      pull_base_image "$file_path"
     fi
     if [ -n "$no_cache" ]; then
-      "$CONTAINER_CMD" build -t "$name" -f "$file" "$no_cache"
+      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$no_cache" "$context"
     else
-      "$CONTAINER_CMD" build -t "$name" -f "$file"
+      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$context"
     fi
   }
   case "$image" in
