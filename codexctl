@@ -4,9 +4,9 @@ set -euo pipefail
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 DEFAULT_IMAGE="codex"
 DEFAULT_NAME_PREFIX="codex-"
-OPENAI_NAME_PREFIX="codex-openai-"
 AUTH_NAME_PREFIX="codex-openai-auth-"
-DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox --profile gpt-oss)
+DEFAULT_CODEX_PROFILE="gpt-oss"
+DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox)
 
 resolve_script_path() {
   local path="$1"
@@ -250,20 +250,26 @@ ensure_keychain() {
   "$KEYCHAIN_SCRIPT" verify >/dev/null 2>&1
 }
 
-run_local() {
+run_container() {
   local name="$1"
   local image="$2"
   local temp="$3"
   local shell="$4"
   local cpu="$5"
   local mem="$6"
+  local pre_exec="$7"
+  shift 7
+  local cmd=("$@")
   local started=0
 
   if [ -n "$name" ] && container_running "$name"; then
+    if [ -n "$pre_exec" ]; then
+      "$pre_exec" "$name"
+    fi
     if [ "$shell" -eq 1 ]; then
       "$CONTAINER_CMD" exec -it "$name" bash
     else
-      "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
+      "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
     fi
     return 0
   fi
@@ -275,10 +281,13 @@ run_local() {
   if [ -n "$name" ] && container_exists "$name"; then
     "$CONTAINER_CMD" start "$name"
     started=1
+    if [ -n "$pre_exec" ]; then
+      "$pre_exec" "$name"
+    fi
     if [ "$shell" -eq 1 ]; then
       "$CONTAINER_CMD" exec -it "$name" bash
     else
-      "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
+      "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
     fi
     if [ "$started" -eq 1 ]; then
       "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
@@ -304,7 +313,7 @@ run_local() {
     if [ "$shell" -eq 1 ]; then
       "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" bash
     else
-      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image"
+      "$CONTAINER_CMD" run "${run_args[@]}" --mount "$mount_arg" "$image" "${cmd[@]}"
     fi
     return 0
   fi
@@ -324,14 +333,29 @@ run_local() {
   "${create_cmd[@]}"
   "$CONTAINER_CMD" start "$name"
   started=1
+  if [ -n "$pre_exec" ]; then
+    "$pre_exec" "$name"
+  fi
   if [ "$shell" -eq 1 ]; then
     "$CONTAINER_CMD" exec -it "$name" bash
   else
-    "$CONTAINER_CMD" exec -it "$name" "${DEFAULT_CODEX_CMD[@]}"
+    "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
   fi
   if [ "$started" -eq 1 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
   fi
+}
+
+run_local() {
+  local name="$1"
+  local image="$2"
+  local temp="$3"
+  local shell="$4"
+  local cpu="$5"
+  local mem="$6"
+  local cmd=("${DEFAULT_CODEX_CMD[@]}" --profile "$DEFAULT_CODEX_PROFILE")
+
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "" "${cmd[@]}"
 }
 
 run_openai() {
@@ -346,54 +370,21 @@ run_openai() {
   [ "$temp" -eq 0 ] || die "OpenAI mode requires a persistent container (omit --temp)"
 
   if [ -z "$name" ]; then
-    name="$(default_name "$OPENAI_NAME_PREFIX")"
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
   if [ "$auth" -eq 1 ] || ! ensure_keychain; then
     run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
   fi
+  local cmd=("${DEFAULT_CODEX_CMD[@]}")
 
-  if container_running "$name"; then
-    if [ "$shell" -eq 1 ]; then
-      if ! "$CONTAINER_CMD" exec "$name" test -f /root/.codex/auth.json; then
-        "$KEYCHAIN_SCRIPT" load-to-container "$name"
-      fi
-      "$CONTAINER_CMD" exec -it "$name" bash
-      return 0
-    fi
-    "$CONTAINER_CMD" exec -it "$name" codex --dangerously-bypass-approvals-and-sandbox
-    return 0
-  fi
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" openai_pre_exec "${cmd[@]}"
+}
 
-  if ! container_exists "$name"; then
-    local create_cmd=("$CONTAINER_CMD" create -t)
-    if [ -n "$cpu" ]; then
-      create_cmd+=(-c "$cpu")
-    fi
-    if [ -n "$mem" ]; then
-      create_cmd+=(-m "$mem")
-    fi
-    create_cmd+=(
-      --name "$name"
-      --mount "type=bind,src=$PWD,dst=/workdir"
-      "$image" sh -c 'sleep infinity'
-    )
-    "${create_cmd[@]}"
-  fi
-
-  local started=0
-  "$CONTAINER_CMD" start "$name" >/dev/null
-  started=1
+openai_pre_exec() {
+  local name="$1"
   if ! "$CONTAINER_CMD" exec "$name" test -f /root/.codex/auth.json; then
     "$KEYCHAIN_SCRIPT" load-to-container "$name"
-  fi
-  if [ "$shell" -eq 1 ]; then
-    "$CONTAINER_CMD" exec -it "$name" bash
-  else
-    "$CONTAINER_CMD" exec -it "$name" codex --dangerously-bypass-approvals-and-sandbox
-  fi
-  if [ "$started" -eq 1 ]; then
-    "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 &
   fi
 }
 
@@ -478,11 +469,7 @@ exec_cmd() {
   require_container
 
   if [ -z "$name" ]; then
-    if [ "$openai" -eq 1 ]; then
-      name="$(default_name "$OPENAI_NAME_PREFIX")"
-    else
-      name="$(default_name "$DEFAULT_NAME_PREFIX")"
-    fi
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
   if [ "${#cmd[@]}" -eq 0 ]; then
@@ -514,11 +501,7 @@ simple_name_cmd() {
   require_container
 
   if [ -z "$name" ]; then
-    if [ "$openai" -eq 1 ]; then
-      name="$(default_name "$OPENAI_NAME_PREFIX")"
-    else
-      name="$(default_name "$DEFAULT_NAME_PREFIX")"
-    fi
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
   case "$action" in
