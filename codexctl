@@ -35,6 +35,14 @@ container_running() {
   container_list_running | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
 }
 
+image_list() {
+  "$CONTAINER_CMD" image ls 2>/dev/null || "$CONTAINER_CMD" images 2>/dev/null || true
+}
+
+image_exists() {
+  image_list | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+}
+
 default_name() {
   local prefix="$1"
   echo "${prefix}$(basename "$PWD")"
@@ -61,10 +69,13 @@ EOF
 
 usage_build() {
   cat <<'EOF'
-Usage: codexctl build [--image NAME]
+Usage: codexctl build [--image NAME] [--rebuild] [--pull-base] [--refresh-base]
 
 Options:
   --image NAME  One of: codex, codex-python, codex-swift (default: all)
+  --rebuild     Rebuild images even if they already exist (disables build cache)
+  --pull-base     Pull the base image before building
+  --refresh-base  Remove the base image first so it is re-fetched
 EOF
 }
 
@@ -113,23 +124,83 @@ EOF
 
 build_cmd() {
   local image=""
+  local rebuild=0
+  local refresh_base=0
+  local pull_base=0
+  local no_cache=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) image="$2"; shift 2 ;;
+      --rebuild) rebuild=1; shift ;;
+      --refresh-base) refresh_base=1; shift ;;
+      --pull-base) pull_base=1; shift ;;
       --help) usage_build; return 0 ;;
-      *) die "Unknown option for build: $1" ;;
+      *) echo "Error: Unknown option for build: $1" >&2; usage_build; return 1 ;;
     esac
   done
 
   require_container
+  if [ "$rebuild" -eq 1 ]; then
+    no_cache="--no-cache"
+  fi
+  remove_image() {
+    local name="$1"
+    if "$CONTAINER_CMD" image rm "$name" >/dev/null 2>&1; then
+      echo "Removed base image: $name"
+      return 0
+    fi
+    if "$CONTAINER_CMD" image delete "$name" >/dev/null 2>&1; then
+      echo "Removed base image: $name"
+      return 0
+    fi
+    echo "Base image not removed (may not exist or command unsupported): $name" >&2
+  }
+  base_image_from_file() {
+    awk 'toupper($1) == "FROM" { print $2; exit }' "$1"
+  }
+  refresh_base_image() {
+    local file="$1"
+    local base
+    base="$(base_image_from_file "$file")"
+    if [ -n "$base" ]; then
+      remove_image "$base"
+    fi
+  }
+  pull_base_image() {
+    local file="$1"
+    local base
+    base="$(base_image_from_file "$file")"
+    if [ -n "$base" ]; then
+      "$CONTAINER_CMD" image pull "$base"
+    fi
+  }
+  build_one() {
+    local name="$1"
+    local file="$2"
+    if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
+      echo "Image already exists: $name (use --rebuild to rebuild)"
+      return 0
+    fi
+    if [ "$refresh_base" -eq 1 ]; then
+      refresh_base_image "$file"
+    fi
+    if [ "$pull_base" -eq 1 ]; then
+      pull_base_image "$file"
+    fi
+    if [ -n "$no_cache" ]; then
+      "$CONTAINER_CMD" build -t "$name" -f "$file" "$no_cache"
+    else
+      "$CONTAINER_CMD" build -t "$name" -f "$file"
+    fi
+  }
   case "$image" in
-    "") "$CONTAINER_CMD" build -t codex -f DockerFile
-        "$CONTAINER_CMD" build -t codex-python -f DockerFile.python
-        "$CONTAINER_CMD" build -t codex-swift -f DockerFile.swift
+    "") build_one codex DockerFile
+        build_one codex-python DockerFile.python
+        build_one codex-swift DockerFile.swift
         ;;
-    codex) "$CONTAINER_CMD" build -t codex -f DockerFile ;;
-    codex-python) "$CONTAINER_CMD" build -t codex-python -f DockerFile.python ;;
-    codex-swift) "$CONTAINER_CMD" build -t codex-swift -f DockerFile.swift ;;
+    codex) build_one codex DockerFile ;;
+    codex-python) build_one codex-python DockerFile.python ;;
+    codex-swift) build_one codex-swift DockerFile.swift ;;
     *) die "Unknown image: $image" ;;
   esac
 }

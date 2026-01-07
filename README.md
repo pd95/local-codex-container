@@ -56,6 +56,8 @@ Quick start:
 ./codexctl run --shell
 ```
 
+Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
+
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
 
 Configuration tweaks:
@@ -98,6 +100,12 @@ container build -t codex -f DockerFile
 container build -t codex-python -f DockerFile.python
 container build -t codex-swift -f DockerFile.swift
 ```
+
+#### Build cache behavior (codexctl)
+
+- `--rebuild` disables Dockerfile layer cache (`--no-cache`). Use when Codex warns you about an outdated version and you want all new containers to start from a fresh image.
+- `--pull-base` pulls the latest base image tag before building. Use when you want to update base images without deleting them first (preferred).
+- `--refresh-base` deletes the base image first, forcing a re-fetch on build. Use when you need a brute-force refresh; this may fail if the base image is still referenced by containers.
 
 ### Network configuration
 
