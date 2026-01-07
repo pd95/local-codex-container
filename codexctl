@@ -135,7 +135,7 @@ build_cmd() {
       --refresh-base) refresh_base=1; shift ;;
       --pull-base) pull_base=1; shift ;;
       --help) usage_build; return 0 ;;
-      *) die "Unknown option for build: $1" ;;
+      *) echo "Error: Unknown option for build: $1" >&2; usage_build; return 1 ;;
     esac
   done
 
