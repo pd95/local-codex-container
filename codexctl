@@ -7,7 +7,7 @@ DEFAULT_NAME_PREFIX="codex-"
 AUTH_NAME_PREFIX="codex-openai-auth-"
 DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="gpt-oss"
-DEFAULT_CODEX_CMD=(codex --dangerously-bypass-approvals-and-sandbox)
+DEFAULT_CODEX_CMD=(codex)
 
 resolve_script_path() {
   local path="$1"

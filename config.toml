@@ -1,3 +1,7 @@
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+#sandbox_mode = "danger-full-access"
+
 [model_providers.myollama]
 name = "Ollama"
 base_url = "http://192.168.64.1:11434/v1"
@@ -6,3 +10,6 @@ wire_api = "responses"
 [profiles.gpt-oss]
 model_provider = "myollama"
 model = "gpt-oss:20b"
+
+[projects."/workdir"]
+trust_level = "trusted"

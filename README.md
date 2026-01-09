@@ -266,7 +266,7 @@ Basically we will create a container keeping the configuration around (auth.json
 3. After successful login you can launch codex using the OpenAI models:
 
    ```bash
-   codex --dangerously-bypass-approvals-and-sandbox
+   codex
    ```
 
 To restart the container later, start the container:
@@ -275,10 +275,10 @@ To restart the container later, start the container:
 container start -i "codex-`basename $PWD`" 
 ```
 
-and launch:
+and launch codex again:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox
+codex
 ```
 
 Remove the container to destroy the device configuration:
