@@ -506,7 +506,7 @@ simple_name_cmd() {
   fi
 
   case "$action" in
-    start) "$CONTAINER_CMD" start -i "$name" ;;
+    start) "$CONTAINER_CMD" start "$name" ;;
     stop) "$CONTAINER_CMD" stop "$name" ;;
     restart) "$CONTAINER_CMD" restart "$name" ;;
     rm) "$CONTAINER_CMD" rm "$name" ;;
