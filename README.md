@@ -102,6 +102,12 @@ Notes:
 - `--temp` creates a disposable container that is removed after the command exits.
 - `--openai --temp` still injects Keychain auth before running the command.
 
+Security notes:
+
+- Containers run as a non-root `codex` user with Linux capabilities dropped.
+- If you need root for maintenance tasks, use `codexctl su-exec` (or `container exec -u 0 ...`).
+- Some scripts that assume root access to system paths may fail; run them via `su-exec` or update them.
+
 The rest of this README explains what `codexctl` does behind the scenes and how to run the underlying `container` commands directly.
 
 ## Behind the scenes
@@ -116,7 +122,7 @@ To build the codex container images for later use, I have written three `DockerF
 
 The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
-Further the build process is going to copy the `config.toml` file into the container at `~/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address 192.168.64.1.
+Further the build process is going to copy the `config.toml` file into the container at `/home/codex/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address 192.168.64.1.
 
 Use the following `container` commands to build the codex images `codex`, `codex-python` and `codex-swift` from the corresponding `DockerFile`:
 
@@ -289,7 +295,7 @@ container rm "codex-`basename $PWD`"
 
 #### Store auth.json in macOS Keychain
 
-After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/root/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
+After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/home/codex/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
 
 ```bash
 codex-auth-keychain.sh store-from-container "codex-`basename $PWD`"
@@ -304,4 +310,4 @@ codex-auth-keychain.sh load-to-container "codex-`basename $PWD`"
 Notes:
 
 - The container must be running for both commands.
-- The default path is `/root/.codex/auth.json` unless you pass an explicit path.
+- The default path is `/home/codex/.codex/auth.json` unless you pass an explicit path.
