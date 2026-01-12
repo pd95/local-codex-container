@@ -1,6 +1,7 @@
 approval_policy = "never"
-sandbox_mode = "workspace-write"
-#sandbox_mode = "danger-full-access"
+#sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
+
 
 [model_providers.myollama]
 name = "Ollama"
