@@ -1,6 +1,7 @@
 approval_policy = "never"
-sandbox_mode = "workspace-write"
-#sandbox_mode = "danger-full-access"
+#sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
+
 
 [model_providers.myollama]
 name = "Ollama"
@@ -10,6 +11,7 @@ wire_api = "responses"
 [profiles.gpt-oss]
 model_provider = "myollama"
 model = "gpt-oss:20b"
+model_context_window = 131072
 
 [projects."/workdir"]
 trust_level = "trusted"

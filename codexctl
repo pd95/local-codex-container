@@ -8,6 +8,7 @@ AUTH_NAME_PREFIX="codex-openai-auth-"
 DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="gpt-oss"
 DEFAULT_CODEX_CMD=(codex)
+SETPRIV_ARGS=(setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs --)
 
 resolve_script_path() {
   local path="$1"
@@ -74,6 +75,7 @@ Commands:
   run        Create/start a container for the current directory
   auth       Run OpenAI device auth flow and store in Keychain
   exec       Exec into a running container (default: bash)
+  su-exec    Exec into a running container as root (default: bash)
   start      Start a container
   stop       Stop a running container
   restart    Restart a container
@@ -131,6 +133,17 @@ Options:
   --name NAME  Container name (default: codex-<dir>)
 
 If no command is provided, exec runs the default shell.
+EOF
+}
+
+usage_su_exec() {
+  cat <<'EOF'
+Usage: codexctl su-exec [options] [command...]
+
+Options:
+  --name NAME  Container name (default: codex-<dir>)
+
+If no command is provided, su-exec runs the default shell as root.
 EOF
 }
 
@@ -270,11 +283,11 @@ run_container() {
   # Execute command inside the container and preserve the exit code.
   run_exec() {
     if [ "$shell" -eq 1 ]; then
-      if ! "$CONTAINER_CMD" exec -it "$actual_name" "$DEFAULT_SHELL"; then
+      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "$DEFAULT_SHELL"; then
         exit_code=$?
       fi
     else
-      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${cmd[@]}"; then
+      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "${cmd[@]}"; then
         exit_code=$?
       fi
     fi
@@ -370,7 +383,7 @@ run_mode() {
 
 openai_pre_exec() {
   local name="$1"
-  if ! "$CONTAINER_CMD" exec "$name" test -f /root/.codex/auth.json; then
+  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/codex/.codex/auth.json; then
     "$KEYCHAIN_SCRIPT" load-to-container "$name"
   fi
 }
@@ -481,7 +494,43 @@ exec_cmd() {
     die "Container not running: $name"
   fi
 
-  "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}"
+  "$CONTAINER_CMD" exec -it "$name" "${SETPRIV_ARGS[@]}" "${cmd[@]}"
+}
+
+su_exec_cmd() {
+  local name=""
+  local cmd=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_su_exec; return 0 ;;
+      --) shift; cmd=("$@"); break ;;
+      --*) die "Unknown option for su-exec: $1" ;;
+      *) cmd=("$@"); break ;;
+    esac
+  done
+
+  require_container
+
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+
+  if [ "${#cmd[@]}" -eq 0 ]; then
+    cmd=("$DEFAULT_SHELL")
+  fi
+  if [ "${#cmd[@]}" -eq 1 ]; then
+    case "${cmd[0]}" in
+      *[[:space:]]*) cmd=("$DEFAULT_SHELL" "-lc" "${cmd[0]}") ;;
+    esac
+  fi
+
+  if ! container_running "$name"; then
+    die "Container not running: $name"
+  fi
+
+  "$CONTAINER_CMD" exec -u 0 -it "$name" "${cmd[@]}"
 }
 
 simple_name_cmd() {
@@ -525,6 +574,7 @@ case "$cmd" in
   run) shift; run_cmd "$@" ;;
   auth) shift; auth_cmd "$@" ;;
   exec) shift; exec_cmd "$@" ;;
+  su-exec) shift; su_exec_cmd "$@" ;;
   start|stop|restart|rm) shift; simple_name_cmd "$cmd" "$@" ;;
   ls) shift; ls_cmd "$@" ;;
   --help|-h|help|"") usage ;;
