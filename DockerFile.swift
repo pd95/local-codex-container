@@ -22,4 +22,4 @@ ENV HOME=/home/codex USER=codex
 USER codex
 
 ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
-CMD ["codex","--dangerously-bypass-approvals-and-sandbox","--profile","gpt-oss"]
+CMD ["codex","--profile","gpt-oss"]
