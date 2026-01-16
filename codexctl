@@ -383,7 +383,7 @@ run_mode() {
 
 openai_pre_exec() {
   local name="$1"
-  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/codex/.codex/auth.json; then
+  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/coder/.codex/auth.json; then
     "$KEYCHAIN_SCRIPT" load-to-container "$name"
   fi
 }

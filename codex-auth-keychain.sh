@@ -26,7 +26,7 @@ maybe_decode_hex() {
 
 store_from_container() {
   local container="$1"
-  local path_in_container="${2:-/home/codex/.codex/auth.json}"
+  local path_in_container="${2:-/home/coder/.codex/auth.json}"
 
   # Read file from container and store into Keychain.
   local data
@@ -48,7 +48,7 @@ store_from_container() {
 
 load_to_container() {
   local container="$1"
-  local path_in_container="${2:-/home/codex/.codex/auth.json}"
+  local path_in_container="${2:-/home/coder/.codex/auth.json}"
 
   local dir
   dir="$(dirname "$path_in_container")"
