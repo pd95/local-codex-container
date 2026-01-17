@@ -1,0 +1,56 @@
+FROM alpine:latest
+
+WORKDIR /workdir
+
+RUN apk add --no-cache \
+    bash ca-certificates curl git openssh-client \
+    ripgrep jq fd \
+    file util-linux \
+    nodejs npm \
+    python3 py3-pip py3-virtualenv py3-setuptools py3-wheel \
+    build-base python3-dev musl-dev \
+    fontconfig ttf-dejavu \
+    freetype libpng jpeg zlib \
+    py3-numpy py3-pandas py3-matplotlib \
+    py3-pypdf py3-pdfminer \
+    py3-reportlab py3-pillow py3-openpyxl py3-xlsxwriter
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv --system-site-packages $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# --- Additional packages via pip
+RUN python3 -m pip install --no-cache-dir -U pip \
+ && python3 -m pip install --no-cache-dir \
+    python-docx pytest xlrd
+
+# --- Node packages
+RUN npm install -g @openai/codex pptxgenjs
+
+
+# --- Non-root user
+RUN addgroup -S coder && adduser -S coder -G coder && \
+    mkdir -p /home/coder/.codex /workdir && \
+    chown -R coder:coder /home/coder /workdir
+
+
+COPY --chown=coder:coder config.toml /home/coder/.codex/
+
+# Configure git
+RUN su -s /bin/sh -c "git config --global user.email \"codex@localhost\" && \
+    git config --global user.name \"Codex CLI\" && \
+    git config --global init.defaultBranch \"main\"" coder
+
+# Set .profile to use venv and global node modules
+RUN printf '%s\n' \
+    'export VIRTUAL_ENV=/opt/venv' \
+    'export PATH="$VIRTUAL_ENV/bin:$PATH"' \
+    'export NODE_PATH="$(npm root -g 2>/dev/null || echo /usr/lib/node_modules)"' \
+    > /home/coder/.profile \
+    && chown coder:coder /home/coder/.profile
+
+ENV HOME=/home/coder USER=coder
+USER coder
+
+ENTRYPOINT [ "setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
+CMD ["codex","--profile","gpt-oss"]

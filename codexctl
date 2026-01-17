@@ -91,7 +91,7 @@ usage_build() {
 Usage: codexctl build [--image NAME] [--rebuild] [--pull-base] [--refresh-base]
 
 Options:
-  --image NAME  One of: codex, codex-python, codex-swift (default: all)
+  --image NAME  One of: codex, codex-python, codex-swift, codex-office (default: all)
   --rebuild     Rebuild images even if they already exist (disables build cache)
   --pull-base     Pull the base image before building
   --refresh-base  Remove the base image first so it is re-fetched
@@ -230,10 +230,12 @@ build_cmd() {
     "") build_one codex DockerFile
         build_one codex-python DockerFile.python
         build_one codex-swift DockerFile.swift
+        build_one codex-office DockerFile.office
         ;;
     codex) build_one codex DockerFile ;;
     codex-python) build_one codex-python DockerFile.python ;;
     codex-swift) build_one codex-swift DockerFile.swift ;;
+    codex-office) build_one codex-office DockerFile.office ;;
     *) die "Unknown image: $image" ;;
   esac
 }
