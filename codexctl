@@ -283,7 +283,7 @@ run_container() {
   # Execute command inside the container and preserve the exit code.
   run_exec() {
     if [ "$shell" -eq 1 ]; then
-      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "$DEFAULT_SHELL"; then
+      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "$DEFAULT_SHELL" "-l"; then
         exit_code=$?
       fi
     else
@@ -482,7 +482,7 @@ exec_cmd() {
   fi
 
   if [ "${#cmd[@]}" -eq 0 ]; then
-    cmd=("$DEFAULT_SHELL")
+    cmd=("$DEFAULT_SHELL" "-l")
   fi
   if [ "${#cmd[@]}" -eq 1 ]; then
     case "${cmd[0]}" in
@@ -518,7 +518,7 @@ su_exec_cmd() {
   fi
 
   if [ "${#cmd[@]}" -eq 0 ]; then
-    cmd=("$DEFAULT_SHELL")
+    cmd=("$DEFAULT_SHELL" "-l")
   fi
   if [ "${#cmd[@]}" -eq 1 ]; then
     case "${cmd[0]}" in
