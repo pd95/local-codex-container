@@ -267,6 +267,122 @@ ensure_keychain() {
   "$KEYCHAIN_SCRIPT" verify >/dev/null 2>&1
 }
 
+auth_info_from_json() {
+  local python_cmd=""
+  if command -v python3 >/dev/null 2>&1; then
+    python_cmd="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_cmd="python"
+  else
+    die "Missing python (python3 or python) to parse auth.json"
+  fi
+
+  local script
+  script="$(cat <<'PY'
+import json
+import re
+import sys
+
+raw = sys.stdin.buffer.read()
+
+def extract_from_json(payload):
+    token = payload.get("refresh_token", "")
+    if not token:
+        tokens = payload.get("tokens", {})
+        if isinstance(tokens, dict):
+            token = tokens.get("refresh_token", "")
+    last_refresh = payload.get("last_refresh", "")
+    return token, last_refresh
+
+try:
+    data = json.loads(raw.decode("utf-8"))
+    token, last_refresh = extract_from_json(data)
+    print(f"{token}\t{last_refresh}")
+except Exception:
+    text = raw.decode("utf-8", "ignore")
+    token_match = re.search(r'"refresh_token"\s*:\s*"([^"]+)"', text)
+    refresh_match = re.search(r'"last_refresh"\s*:\s*"([^"]+)"', text)
+    token = token_match.group(1) if token_match else ""
+    last_refresh = refresh_match.group(1) if refresh_match else ""
+    print(f"{token}\t{last_refresh}")
+PY
+)"
+  "$python_cmd" -c "$script"
+}
+
+keychain_auth_info() {
+  "$KEYCHAIN_SCRIPT" read | auth_info_from_json
+}
+
+container_auth_info() {
+  local name="$1"
+  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/coder/.codex/auth.json; then
+    echo -e "\t"
+    return 0
+  fi
+  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat /home/coder/.codex/auth.json | auth_info_from_json
+}
+
+sync_openai_auth_to_container() {
+  local name="$1"
+  if ! ensure_keychain; then
+    die "Missing OpenAI auth in Keychain. Run: codexctl auth"
+  fi
+  local keychain_info
+  local keychain_token
+  local keychain_refresh
+  keychain_info="$(keychain_auth_info)"
+  IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
+  if [ -z "$keychain_token" ]; then
+    die "Keychain auth missing refresh_token. Run: codexctl auth"
+  fi
+  local container_info
+  local container_token
+  local container_refresh
+  container_info="$(container_auth_info "$name")"
+  IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
+  if [ -z "$container_token" ]; then
+    echo "Refreshing OpenAI auth in $name" >&2
+    "$KEYCHAIN_SCRIPT" load-to-container "$name"
+    return 0
+  fi
+  if [ "$container_token" = "$keychain_token" ] && [ "$container_refresh" = "$keychain_refresh" ]; then
+    return 0
+  fi
+  echo "Refreshing OpenAI auth in $name" >&2
+  "$KEYCHAIN_SCRIPT" load-to-container "$name"
+}
+
+sync_openai_auth_from_container() {
+  local name="$1"
+  local container_info
+  local container_token
+  local container_refresh
+  container_info="$(container_auth_info "$name")"
+  IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
+  if [ -z "$container_token" ] || [ -z "$container_refresh" ]; then
+    return 0
+  fi
+  if ! ensure_keychain; then
+    echo "Keychain auth missing; skipping post-run sync from $name" >&2
+    return 0
+  fi
+  local keychain_info
+  local keychain_token
+  local keychain_refresh
+  keychain_info="$(keychain_auth_info)"
+  IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
+  if [ -z "$keychain_token" ]; then
+    echo "Keychain auth missing refresh_token; skipping post-run sync from $name" >&2
+    return 0
+  fi
+  if [ -z "$keychain_refresh" ] || [[ "$container_refresh" < "$keychain_refresh" ]] || [ "$container_refresh" = "$keychain_refresh" ]; then
+    return 0
+  fi
+  echo "Updating Keychain auth from $name" >&2
+  "$KEYCHAIN_SCRIPT" store-from-container "$name"
+}
+
 run_container() {
   local name="$1"
   local image="$2"
@@ -275,7 +391,8 @@ run_container() {
   local cpu="$5"
   local mem="$6"
   local pre_exec="$7"
-  shift 7
+  local post_exec="$8"
+  shift 8
   local cmd=("$@")
   local exit_code=0
   local started=0
@@ -339,6 +456,11 @@ run_container() {
     "$pre_exec" "$actual_name"
   fi
   run_exec
+  if [ -n "$post_exec" ]; then
+    if ! "$post_exec" "$actual_name"; then
+      echo "Warning: post-run step failed for $actual_name" >&2
+    fi
+  fi
   if [ "$already_running" -eq 1 ]; then
     return "$exit_code"
   fi
@@ -365,10 +487,12 @@ run_mode() {
   shift 8
   local -a cmd_override=("$@")
   local pre_exec=""
+  local post_exec=""
   local cmd=("${DEFAULT_CODEX_CMD[@]}" --profile "$DEFAULT_CODEX_PROFILE")
 
   if [ "$openai" -eq 1 ]; then
     pre_exec="openai_pre_exec"
+    post_exec="openai_post_exec"
     cmd=("${DEFAULT_CODEX_CMD[@]}")
     if [ "$auth" -eq 1 ] || ! ensure_keychain; then
       run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
@@ -380,14 +504,17 @@ run_mode() {
     shell=0
   fi
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$pre_exec" "${cmd[@]}"
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$pre_exec" "$post_exec" "${cmd[@]}"
 }
 
 openai_pre_exec() {
   local name="$1"
-  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/coder/.codex/auth.json; then
-    "$KEYCHAIN_SCRIPT" load-to-container "$name"
-  fi
+  sync_openai_auth_to_container "$name"
+}
+
+openai_post_exec() {
+  local name="$1"
+  sync_openai_auth_from_container "$name"
 }
 
 run_cmd() {
@@ -461,6 +588,7 @@ auth_cmd() {
     name="$(default_name "$AUTH_NAME_PREFIX")"
   fi
   run_auth_flow "$image" "$name"
+  echo "Auth updated. Restart any running --openai containers to pick up the new token." >&2
 }
 
 exec_cmd() {

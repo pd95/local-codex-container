@@ -9,6 +9,7 @@ usage() {
   echo "Usage:"
   echo "  $0 store-from-container <container> [path_in_container]"
   echo "  $0 load-to-container    <container> [path_in_container]"
+  echo "  $0 read"
   echo "  $0 verify"
   exit 1
 }
@@ -34,6 +35,7 @@ store_from_container() {
     echo "Failed to read $path_in_container from $container" >&2
     exit 4
   fi
+  echo "Storing auth in Keychain ($SERVICE_NAME)" >&2
   if security add-generic-password \
     -a "$ACCOUNT_NAME" \
     -s "$SERVICE_NAME" \
@@ -54,6 +56,7 @@ load_to_container() {
   dir="$(dirname "$path_in_container")"
 
   # Read Keychain and write into container file.
+  echo "Loading auth from Keychain ($SERVICE_NAME)" >&2
   if security find-generic-password \
     -a "$ACCOUNT_NAME" \
     -s "$SERVICE_NAME" \
@@ -65,10 +68,23 @@ load_to_container() {
   fi
 }
 
+read_keychain() {
+  echo "Reading auth from Keychain ($SERVICE_NAME)" >&2
+  if security find-generic-password \
+    -a "$ACCOUNT_NAME" \
+    -s "$SERVICE_NAME" \
+    -w | maybe_decode_hex; then
+    return 0
+  fi
+  echo "Failed to read Keychain item for $SERVICE_NAME" >&2
+  exit 6
+}
+
 cmd="${1:-}"
 case "$cmd" in
   store-from-container) [[ $# -ge 2 && $# -le 3 ]] || usage; store_from_container "$2" "${3:-}" ;;
   load-to-container) [[ $# -ge 2 && $# -le 3 ]] || usage; load_to_container "$2" "${3:-}" ;;
+  read) [[ $# -eq 1 ]] || usage; read_keychain ;;
   verify)
     if security find-generic-password -a "$ACCOUNT_NAME" -s "$SERVICE_NAME" >/dev/null; then
       echo "Keychain item exists for $SERVICE_NAME"

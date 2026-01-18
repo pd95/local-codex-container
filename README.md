@@ -90,7 +90,7 @@ Note: `codexctl` was authored by Codex itself, running inside an Apple `containe
 ### Other useful commands
 
 ```bash
-codexctl auth              # only run device-auth and store in Keychain
+codexctl auth              # run device-auth and store in Keychain
 codexctl exec              # shell into running container
 codexctl ls                # list containers
 codexctl rm                # remove the default container for this directory
@@ -101,6 +101,9 @@ Notes:
 - `--auth` only works together with `--openai`.
 - `--temp` creates a disposable container that is removed after the command exits.
 - `--openai --temp` still injects Keychain auth before running the command.
+- Keychain auth is the source of truth for `--openai`; it is synced into running containers before each run.
+- After a run, if the container refresh time is newer (and present), the updated auth is saved back into Keychain.
+- After `codexctl auth`, exit any running `--openai` sessions and re-run `codexctl run --openai` to pick up the new token.
 
 Security notes:
 
@@ -311,3 +314,5 @@ Notes:
 
 - The container must be running for both commands.
 - The default path is `/home/coder/.codex/auth.json` unless you pass an explicit path.
+- `codexctl run --openai` and `codexctl auth` automatically sync the Keychain auth into running containers when it differs.
+- `codexctl run --openai` saves refreshed auth back to Keychain when the container reports a newer refresh time (and that field is present).
