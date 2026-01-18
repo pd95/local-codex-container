@@ -329,6 +329,16 @@ build_cmd() {
 run_auth_flow() {
   local image="$1"
   local auth_name="$2"
+  local created=0
+
+  cleanup_auth_container() {
+    if [ "$created" -eq 1 ] && container_exists "$auth_name"; then
+      "$CONTAINER_CMD" stop "$auth_name" >/dev/null 2>&1 || true
+      "$CONTAINER_CMD" rm "$auth_name" >/dev/null 2>&1 || true
+    fi
+  }
+
+  trap cleanup_auth_container EXIT
 
   [ -x "$KEYCHAIN_SCRIPT" ] || die "Missing $KEYCHAIN_SCRIPT"
 
@@ -339,12 +349,15 @@ run_auth_flow() {
   "$CONTAINER_CMD" create -t \
     --name "$auth_name" \
     "$image" sh -c 'sleep infinity'
+  created=1
 
   "$CONTAINER_CMD" start "$auth_name"
   "$CONTAINER_CMD" exec -it "$auth_name" bash -lc 'codex login --device-auth'
   "$KEYCHAIN_SCRIPT" store-from-container "$auth_name"
   "$CONTAINER_CMD" stop "$auth_name"
   "$CONTAINER_CMD" rm "$auth_name"
+  created=0
+  trap - EXIT
 }
 
 ensure_keychain() {
