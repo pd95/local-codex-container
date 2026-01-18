@@ -542,7 +542,7 @@ run_container() {
   run_exec
   if [ -n "$post_exec" ]; then
     if ! "$post_exec" "$actual_name"; then
-      echo "Warning: post-run step failed for $actual_name" >&2
+      warn "post-run step failed for $actual_name"
     fi
   fi
   if [ "$already_running" -eq 1 ]; then
