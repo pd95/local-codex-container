@@ -338,7 +338,6 @@ run_auth_flow() {
 
   "$CONTAINER_CMD" create -t \
     --name "$auth_name" \
-    --mount "type=bind,src=$PWD,dst=/workdir" \
     "$image" sh -c 'sleep infinity'
 
   "$CONTAINER_CMD" start "$auth_name"
