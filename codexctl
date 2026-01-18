@@ -63,7 +63,19 @@ image_exists() {
 
 default_name() {
   local prefix="$1"
-  echo "${prefix}$(basename "$PWD")"
+  echo "${prefix}$(sanitize_container_name "$(basename "$PWD")")"
+}
+
+sanitize_container_name() {
+  local raw="$1"
+  local sanitized
+  sanitized="$(printf '%s' "$raw" | tr -cs 'A-Za-z0-9_.-' '-')"
+  sanitized="${sanitized#-}"
+  sanitized="${sanitized%-}"
+  if [ -z "$sanitized" ]; then
+    sanitized="workdir"
+  fi
+  echo "$sanitized"
 }
 
 usage() {

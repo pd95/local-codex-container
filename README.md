@@ -108,6 +108,8 @@ Notes:
 Security notes:
 
 - Containers run as a non-root `coder` user with Linux capabilities dropped.
+- `config.toml` sets `sandbox_mode = "danger-full-access"` to maximize capabilities. Codex can read/write anything in the mounted directory tree and run tools inside the container. Use only with trusted workspaces or change it to `workspace-write` for tighter guardrails.
+- Containers have full outbound network access by default. `--openai` needs outbound access; if you want to constrain networking, use host firewall rules or a restricted container network.
 - If you need root for maintenance tasks, use `codexctl su-exec` (or `container exec -u 0 ...`).
 - Some scripts that assume root access to system paths may fail; run them via `su-exec` or update them.
 
@@ -143,7 +145,7 @@ container build -t codex-swift -f DockerFile.swift
 
 ### Network configuration
 
-By default, Ollama is only listening on localhost connections, i.e. on <http://localhost:11434> or <http://127.0.0.1:11434>. To be able to connect from a container (through a virtual network) to the Ollama service running on localhost, we have two options:
+By default, Ollama is only listening on localhost connections, i.e. on <http://localhost:11434> or <http://127.0.0.1:11434>. Containers have outbound network access enabled (required for `--openai`), so be deliberate about exposing host services. To be able to connect from a container (through a virtual network) to the Ollama service running on localhost, we have two options:
 
 ### Option 1: Expose Ollama service on network (**risky**) ⚠️
 
