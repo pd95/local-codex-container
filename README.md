@@ -1,6 +1,8 @@
 # Local Codex on Mac
 
-**Run Codex AI locally on macOS, powered by Ollama**
+>
+> **Run Codex AI locally on macOS, powered by Ollama**
+>
 
 This repository combines multiple open-source tools to run an agentic AI safely and privately on a Mac.
 
@@ -55,11 +57,14 @@ codexctl build
 # Run Codex for the current directory (persistent by default)
 codexctl run
 
-# Throwaway session
-codexctl run --temp
+# Run with a specific image
+codexctl run --image codex-office
 
 # Read-only workdir mount
 codexctl run --read-only
+
+# Throwaway session (container is deleted when codex is quit)
+codexctl run --temp
 
 # OpenAI mode (auto-auth if needed)
 codexctl run --openai
@@ -71,6 +76,8 @@ codexctl run --shell
 codexctl run --cmd bash
 ```
 
+Note: `codexctl build` produces the `codex`, `codex-python`, `codex-swift`, and `codex-office` images by default.
+
 Note: `--cmd` consumes the remaining arguments and cannot be combined with `--shell`, so place it last. If you pass a single quoted string containing spaces, it runs via `$CODEX_SHELL -lc`. This same behavior applies to `codexctl exec`.
 
 Note: `CODEX_SHELL` is an environment variable to override the default shell used by `run --shell` and `exec` (default is `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
@@ -79,11 +86,22 @@ Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occas
 
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
 
+#### Image selection
+
+Use `--image` when you need a specific toolchain, or set `DEFAULT_IMAGE` in `codexctl` for a permanent default.
+
+When to use which image:
+
+- `codex`: general-purpose CLI work or small scripts without a heavy runtime.
+- `codex-python`: Python-heavy tasks, data wrangling, and libraries not in the base image.
+- `codex-swift`: Swift projects, SwiftPM builds, and Swift tooling.
+- `codex-office`: document-centric workflows (docx/xlsx/pdf parsing, report generation).
+
 ### Configuration tweaks
 
 `codexctl` exposes a few top-level constants (in `codexctl`) that you can edit to adjust default behavior:
 
-- `DEFAULT_IMAGE` (default image for `run` and `auth`)
+- `DEFAULT_IMAGE` (default image for `run` and `auth`, e.g. `codex`, `codex-python`, `codex-swift`, `codex-office`)
 - `DEFAULT_NAME_PREFIX` (default local container prefix)
 - `AUTH_NAME_PREFIX` (default auth container prefix)
 - `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
@@ -124,22 +142,28 @@ The rest of this README explains what `codexctl` does behind the scenes and how 
 
 ### Build codex container images
 
-To build the codex container images for later use, I have written three `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
+To build the codex container images for later use, I have written four `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
 
-- `DockerFile` for a plain Alpine Linux (~320 MB)
-- `DockerFile.python` for a Alpine based Python installation (~330 MB)
-- `DockerFile.swift` for an Ubuntu based Swift installation (~1.68 GB)
+- `DockerFile` for a plain Alpine Linux (~191 MB)
+- `DockerFile.python` for a Alpine based Python installation (~203 MB)
+- `DockerFile.swift` for an Ubuntu based Swift installation (~1.41 GB)
+- `DockerFile.office` for Alpine + Python + Office tooling (~417 MB)
 
 The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
 Further the build process is going to copy the `config.toml` file into the container at `/home/coder/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address 192.168.64.1.
 
-Use the following `container` commands to build the codex images `codex`, `codex-python` and `codex-swift` from the corresponding `DockerFile`:
+Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-swift`, and `codex-office` from the corresponding `DockerFile`:
 
 ```bash
 container build -t codex -f DockerFile
 container build -t codex-python -f DockerFile.python
 container build -t codex-swift -f DockerFile.swift
+container build -t codex-office -f DockerFile.office
+
+Notes:
+- The Swift image includes `format` and `lint` wrappers for `swift-format` and initializes `swiftly` for toolchain management.
+- The Office image sets up a writable venv at `/opt/venv` and puts it on `PATH` by default.
 ```
 
 #### Build cache behavior (codexctl)
