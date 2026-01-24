@@ -9,19 +9,10 @@ command from its corresponding `testing/<image>` directory so the container only
 mounts that subtree.
 
 ```bash
-(cd testing/codex && codexctl run --image codex --temp --cmd bash -lc 'bash --version && git --version && rg --version && jq --version && codex --version')
-(cd testing/codex-python && codexctl run --image codex-python --temp --cmd bash -lc 'which python && python -c "import sys; print(sys.executable)"')
-(cd testing/codex-office && codexctl run --image codex-office --temp --cmd bash -lc 'python -c "import docx, openpyxl, reportlab; print(\"python-ok\")" && node -e "require(\"pptxgenjs\"); console.log(\"node-ok\")"')
-(cd testing/codex-swift && codexctl run --image codex-swift --temp --cmd bash -lc 'swift --version && swift-format --version && command -v format >/dev/null && command -v lint >/dev/null')
-```
-
-Optional: run them all at once as a single command (no shell comments):
-
-```bash
-(cd testing/codex && codexctl run --image codex --temp --cmd bash -lc 'bash --version && git --version && rg --version && jq --version && codex --version') \
-  && (cd testing/codex-python && codexctl run --image codex-python --temp --cmd bash -lc 'which python && python -c "import sys; print(sys.executable)"') \
-  && (cd testing/codex-office && codexctl run --image codex-office --temp --cmd bash -lc 'python -c "import docx, openpyxl, reportlab; print(\"python-ok\")" && node -e "require(\"pptxgenjs\"); console.log(\"node-ok\")"') \
-  && (cd testing/codex-swift && codexctl run --image codex-swift --temp --cmd bash -lc 'swift --version && swift-format --version && command -v format >/dev/null && command -v lint >/dev/null')
+codexctl run --image codex --temp --workdir testing/codex --cmd bash -lc 'bash --version && git --version && rg --version && jq --version && codex --version'
+codexctl run --image codex-python --temp --workdir testing/codex-python --cmd bash -lc 'which python && python -c "import sys; print(sys.executable)"'
+codexctl run --image codex-office --temp --workdir testing/codex-office --cmd bash -lc 'python -c "import docx, openpyxl, reportlab; print(\"python-ok\")" && node -e "require(\"pptxgenjs\"); console.log(\"node-ok\")"'
+codexctl run --image codex-swift --temp --workdir testing/codex-swift --cmd bash -lc 'swift --version && swift-format --version && command -v format >/dev/null && command -v lint >/dev/null'
 ```
 
 ## Codex CLI sanity checks (interactive)
@@ -32,7 +23,7 @@ and write to the mounted workdir. You need the local model endpoint (Ollama) run
 Base image:
 
 ```bash
-(cd testing/codex && codexctl run --image codex --temp)
+codexctl run --image codex --temp --workdir testing/codex
 ```
 
 In the Codex prompt, paste:
@@ -45,7 +36,7 @@ Then run: ls -l /workdir/codex-smoke.txt and cat the file.
 Python image:
 
 ```bash
-(cd testing/codex-python && codexctl run --image codex-python --temp)
+codexctl run --image codex-python --temp --workdir testing/codex-python
 ```
 
 Prompt:
@@ -58,7 +49,7 @@ Then run: python -c "import sys; print(sys.executable)" and cat the file.
 Office image:
 
 ```bash
-(cd testing/codex-office && codexctl run --image codex-office --temp)
+codexctl run --image codex-office --temp --workdir testing/codex-office
 ```
 
 Prompt:
@@ -71,7 +62,7 @@ Then run: ls -l /workdir/codex-office-smoke.docx
 Swift image:
 
 ```bash
-(cd testing/codex-swift && codexctl run --image codex-swift --temp)
+codexctl run --image codex-swift --temp --workdir testing/codex-swift
 ```
 
 Prompt:
@@ -96,11 +87,11 @@ cp -R test-codex-office/office_tool_tests testing/codex-office/
 ```
 
 ```bash
-(cd testing/codex-office && codexctl run --image codex-office --temp --cmd bash -lc './office_tool_tests/run.sh')
+codexctl run --image codex-office --temp --workdir testing/codex-office --cmd bash -lc './office_tool_tests/run.sh'
 ```
 
 Expected output includes:
 
-- `Fixtures generated in /workdir/test-codex-office/office_tool_tests/fixtures`
+- `Fixtures generated in /workdir/office_tool_tests/fixtures`
 - `PPTX verified.`
 - `All fixtures verified.`
