@@ -136,7 +136,8 @@ image_exists() {
 
 default_name() {
   local prefix="$1"
-  echo "${prefix}$(sanitize_container_name "$(basename "$PWD")")"
+  local path="${2:-$PWD}"
+  echo "${prefix}$(sanitize_container_name "$(basename "$path")")"
 }
 
 sanitize_container_name() {
@@ -190,6 +191,7 @@ Usage: codexctl run [options]
 Options:
   --name NAME     Container name (default: codex-<dir>)
   --image NAME    Image to use (default: codex)
+  --workdir PATH  Host directory to mount at /workdir (default: cwd)
   --openai        Use OpenAI mode (device auth)
   --auth          Force OpenAI login flow
   --temp          Create a throwaway container (auto-removed after exit)
@@ -275,11 +277,21 @@ build_cmd() {
   base_image_from_file() {
     awk 'toupper($1) == "FROM" { print $2; exit }' "$1"
   }
+  is_local_base_image() {
+    case "$1" in
+      codex|codex-python) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
   refresh_base_image() {
     local file="$1"
     local base
     base="$(base_image_from_file "$file")"
     if [ -n "$base" ]; then
+      if is_local_base_image "$base"; then
+        echo "Skipping base image removal for local image: $base"
+        return 0
+      fi
       remove_image "$base"
     fi
   }
@@ -288,6 +300,10 @@ build_cmd() {
     local base
     base="$(base_image_from_file "$file")"
     if [ -n "$base" ]; then
+      if is_local_base_image "$base"; then
+        echo "Skipping base image pull for local image: $base"
+        return 0
+      fi
       "$CONTAINER_CMD" image pull "$base"
     fi
   }
@@ -315,13 +331,16 @@ build_cmd() {
   case "$image" in
     "") build_one codex DockerFile
         build_one codex-python DockerFile.python
-        build_one codex-swift DockerFile.swift
         build_one codex-office DockerFile.office
+        build_one codex-swift DockerFile.swift
         ;;
     codex) build_one codex DockerFile ;;
-    codex-python) build_one codex-python DockerFile.python ;;
+    codex-python) build_one codex DockerFile
+        build_one codex-python DockerFile.python ;;
     codex-swift) build_one codex-swift DockerFile.swift ;;
-    codex-office) build_one codex-office DockerFile.office ;;
+    codex-office) build_one codex DockerFile
+        build_one codex-python DockerFile.python
+        build_one codex-office DockerFile.office ;;
     *) die "Unknown image: $image" ;;
   esac
 }
@@ -480,9 +499,10 @@ run_container() {
   local cpu="$5"
   local mem="$6"
   local read_only="$7"
-  local pre_exec="$8"
-  local post_exec="$9"
-  shift 9
+  local workdir="$8"
+  local pre_exec="$9"
+  local post_exec="${10}"
+  shift 10
   local cmd=("$@")
   local exit_code=0
   local started=0
@@ -528,7 +548,7 @@ run_container() {
       if [ -n "$actual_name" ]; then
         create_cmd+=(--name "$actual_name")
       fi
-      local mount_opts="type=bind,src=$PWD,dst=/workdir"
+      local mount_opts="type=bind,src=$workdir,dst=/workdir"
       if [ "$read_only" -eq 1 ]; then
         mount_opts="${mount_opts},readonly"
       fi
@@ -582,7 +602,8 @@ run_mode() {
   local cpu="$7"
   local mem="$8"
   local read_only="$9"
-  shift 9
+  local workdir="${10}"
+  shift 10
   local -a cmd_override=("$@")
   local pre_exec=""
   local post_exec=""
@@ -602,7 +623,7 @@ run_mode() {
     shell=0
   fi
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$pre_exec" "$post_exec" "${cmd[@]}"
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$workdir" "$pre_exec" "$post_exec" "${cmd[@]}"
 }
 
 openai_pre_exec() {
@@ -625,6 +646,7 @@ run_cmd() {
   local read_only=0
   local cpu=""
   local mem=""
+  local workdir=""
   local -a cmd_override=()
   local cmd_override_set=0
   local shell_set=0
@@ -633,6 +655,7 @@ run_cmd() {
     case "$1" in
       --name) name="$2"; shift 2 ;;
       --image) image="$2"; shift 2 ;;
+      --workdir) workdir="$2"; shift 2 ;;
       --openai) openai=1; shift ;;
       --auth) auth=1; shift ;;
       --temp) temp=1; shift ;;
@@ -662,12 +685,20 @@ run_cmd() {
     die "--auth requires --openai"
   fi
 
+  if [ -z "$workdir" ]; then
+    workdir="$PWD"
+  fi
+  if [ ! -d "$workdir" ]; then
+    die "Workdir not found: $workdir"
+  fi
+  workdir="$(CDPATH= cd -- "$workdir" && pwd)"
+
   [ -n "$image" ] || image="$DEFAULT_IMAGE"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
-    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+    name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
   fi
 
-  run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$cpu" "$mem" "$read_only" ${cmd_override[@]+"${cmd_override[@]}"}
+  run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$cpu" "$mem" "$read_only" "$workdir" ${cmd_override[@]+"${cmd_override[@]}"}
 }
 
 auth_cmd() {

@@ -1,25 +1,89 @@
 # For Swift Development
-FROM docker.io/swift:latest
+FROM swift:latest
 
-WORKDIR /workdir
+# --- Core dev tooling (keep lean, no recommends) ---
+RUN DEBIAN_FRONTEND=noninteractive \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        npm file curl ripgrep jq util-linux \
+        make \
+        python-is-python3 \
+  && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && \
-    apt-get -y install npm file curl ripgrep jq python-is-python3 util-linux
-RUN npm i -g @openai/codex 
+# --- Codex CLI ---
+RUN npm install -g @openai/codex \
+    --omit=dev \
+    --no-fund \
+    --no-audit \
+    && npm cache clean --force
 
-RUN groupadd -r coder && useradd -r -g coder -m -d /home/coder -s /bin/bash coder && \
-    mkdir -p /home/coder/.codex /workdir && \
-    chown -R coder:coder /home/coder /workdir
+# --- Wrapper scripts (swift-format is already in swift:latest) ---
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '' \
+  '# Prefer Sources/Tests if present, otherwise format whole repo' \
+  'if [ -d Sources ] || [ -d Tests ]; then' \
+  '  swift-format format -i -r Sources Tests 2>/dev/null || true' \
+  'else' \
+  '  swift-format format -i -r .' \
+  'fi' \
+  > /usr/local/bin/format \
+  && chmod +x /usr/local/bin/format
 
+RUN printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '' \
+  '# swift-format lint exits non-zero on violations' \
+  'if [ -d Sources ] || [ -d Tests ]; then' \
+  '  swift-format lint -r Sources Tests 2>/dev/null || swift-format lint -r .' \
+  'else' \
+  '  swift-format lint -r .' \
+  'fi' \
+  > /usr/local/bin/lint \
+  && chmod +x /usr/local/bin/lint
+
+# --- Add user ---
+RUN groupadd coder \
+ && useradd -m -g coder -d /home/coder -s /bin/bash coder \
+ && mkdir -p /home/coder/.codex /workdir \
+ && chown -R coder:coder /home/coder /workdir
+
+# Make sure HOME is correct for subsequent RUNs when we switch user
+ENV HOME=/home/coder
+
+# Copy Codex default configuration
 COPY --chown=coder:coder config.toml /home/coder/.codex/
 
-# Configure git
-RUN su -s /bin/bash -c "git config --global user.email \"codex@localhost\" && \
-    git config --global user.name \"Codex CLI\" && \
-    git config --global init.defaultBranch \"main\"" coder
+# Swiftly paths (user-owned, so codex can install toolchains later if needed)
+ENV SWIFTLY_HOME_DIR=/home/coder/.swiftly
+ENV SWIFTLY_BIN_DIR=/home/coder/.local/bin
+ENV PATH=/home/coder/.local/bin:$PATH
 
-ENV HOME=/home/coder USER=coder
+RUN mkdir -p /home/coder/.local/bin /home/coder/.swiftly \
+ && chown -R coder:coder /home/coder/.local /home/coder/.swiftly
+
+# From here on, run as coder so swiftly writes user-owned files
 USER coder
+WORKDIR /workdir
 
+# --- Add swiftly to manage swift toolchains (no extra toolchain install) ---
+RUN curl -fsSL https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz \
+    | tar -xz -C /tmp \
+ && /tmp/swiftly init \
+    --quiet-shell-followup \
+    --no-modify-profile \
+    --skip-install \
+    --assume-yes \
+ && rm -rf /tmp/swiftly
+
+# Configure git
+RUN git config --global user.email "codex@localhost" \
+ && git config --global user.name "Codex CLI" \
+ && git config --global init.defaultBranch "main" \
+ && git config --global --add safe.directory /workdir
+
+# Hardened entrypoint
 ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
 CMD ["codex","--profile","gpt-oss"]

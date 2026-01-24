@@ -1,24 +1,27 @@
 # For Python environment
-FROM python:alpine
+FROM codex
 
-WORKDIR /workdir
+USER root
 
-RUN apk add bash npm file curl git ripgrep jq util-linux
-RUN npm i -g @openai/codex 
+# --- Python runtime & packaging ---
+RUN apk add --no-cache \
+    python3 py3-pip py3-setuptools py3-wheel
 
-RUN addgroup -S coder && adduser -S coder -G coder && \
-    mkdir -p /home/coder/.codex /workdir && \
-    chown -R coder:coder /home/coder /workdir
+# --- Create a writable venv for coder ---
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv --system-site-packages "$VIRTUAL_ENV" \
+ && "$VIRTUAL_ENV/bin/python" -m pip install --no-cache-dir -U pip setuptools wheel \
+ && chown -R coder:coder "$VIRTUAL_ENV"
 
-COPY --chown=coder:coder config.toml /home/coder/.codex/
+# Ensure login shells keep the venv on PATH
+RUN printf '%s\n' \
+  'export VIRTUAL_ENV=/opt/venv' \
+  'export PATH="/opt/venv/bin:$PATH"' \
+  > /etc/profile.d/venv.sh
 
-# Configure git
-RUN su -s /bin/sh -c "git config --global user.email \"codex@localhost\" && \
-    git config --global user.name \"Codex CLI\" && \
-    git config --global init.defaultBranch \"main\"" coder
+# Ensure venv is the default python/pip for all processes (including Codex runs)
+ENV PATH="$VIRTUAL_ENV/bin:$PATH" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-ENV HOME=/home/coder USER=coder
 USER coder
-
-ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
-CMD ["codex","--profile","gpt-oss"]
+WORKDIR /workdir
