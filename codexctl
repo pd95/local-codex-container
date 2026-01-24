@@ -275,11 +275,21 @@ build_cmd() {
   base_image_from_file() {
     awk 'toupper($1) == "FROM" { print $2; exit }' "$1"
   }
+  is_local_base_image() {
+    case "$1" in
+      codex|codex-python) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
   refresh_base_image() {
     local file="$1"
     local base
     base="$(base_image_from_file "$file")"
     if [ -n "$base" ]; then
+      if is_local_base_image "$base"; then
+        echo "Skipping base image removal for local image: $base"
+        return 0
+      fi
       remove_image "$base"
     fi
   }
@@ -288,6 +298,10 @@ build_cmd() {
     local base
     base="$(base_image_from_file "$file")"
     if [ -n "$base" ]; then
+      if is_local_base_image "$base"; then
+        echo "Skipping base image pull for local image: $base"
+        return 0
+      fi
       "$CONTAINER_CMD" image pull "$base"
     fi
   }
@@ -315,13 +329,16 @@ build_cmd() {
   case "$image" in
     "") build_one codex DockerFile
         build_one codex-python DockerFile.python
-        build_one codex-swift DockerFile.swift
         build_one codex-office DockerFile.office
+        build_one codex-swift DockerFile.swift
         ;;
     codex) build_one codex DockerFile ;;
-    codex-python) build_one codex-python DockerFile.python ;;
+    codex-python) build_one codex DockerFile
+        build_one codex-python DockerFile.python ;;
     codex-swift) build_one codex-swift DockerFile.swift ;;
-    codex-office) build_one codex-office DockerFile.office ;;
+    codex-office) build_one codex DockerFile
+        build_one codex-python DockerFile.python
+        build_one codex-office DockerFile.office ;;
     *) die "Unknown image: $image" ;;
   esac
 }

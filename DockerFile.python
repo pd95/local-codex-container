@@ -1,39 +1,21 @@
 # For Python environment
-FROM python:alpine
+FROM codex
 
-# --- Core tooling ---
+USER root
+
+# --- Python runtime & packaging ---
 RUN apk add --no-cache \
-        bash npm file curl git ripgrep jq util-linux
+    python3 py3-pip py3-setuptools py3-wheel
 
-# --- Codex CLI ---
-RUN npm install -g @openai/codex \
-    --omit=dev \
-    --no-fund \
-    --no-audit \
-    && npm cache clean --force
+# --- Create a writable venv for coder ---
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv --system-site-packages "$VIRTUAL_ENV" \
+ && "$VIRTUAL_ENV/bin/python" -m pip install --no-cache-dir -U pip setuptools wheel \
+ && chown -R coder:coder "$VIRTUAL_ENV"
 
-# --- Add user ---
-RUN addgroup -S coder \
- && adduser  -S -G coder -h /home/coder -s /bin/bash coder \
- && mkdir -p /home/coder/.codex /workdir \
- && chown -R coder:coder /home/coder /workdir
+# Ensure venv is the default python/pip for all processes (including Codex runs)
+ENV PATH="$VIRTUAL_ENV/bin:$PATH" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Make sure HOME is correct for subsequent RUNs when we switch user
-ENV HOME=/home/coder
-
-# Copy Codex default configuration
-COPY --chown=coder:coder config.toml /home/coder/.codex/
-
-# From here on, run as coder so swiftly writes user-owned files
 USER coder
 WORKDIR /workdir
-
-# Configure git
-RUN git config --global user.email "codex@localhost" \
- && git config --global user.name "Codex CLI" \
- && git config --global init.defaultBranch "main" \
- && git config --global --add safe.directory /workdir
-
-# Hardened entrypoint
-ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
-CMD ["codex","--profile","gpt-oss"]

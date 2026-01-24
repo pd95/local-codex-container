@@ -145,21 +145,23 @@ The rest of this README explains what `codexctl` does behind the scenes and how 
 To build the codex container images for later use, I have written four `DockerFile`s which are installing `codex`, `git` and other basic tools (`bash`, `npm`, `file`, `curl`):
 
 - `DockerFile` for a plain Alpine Linux (~191 MB)
-- `DockerFile.python` for a Alpine based Python installation (~203 MB)
+- `DockerFile.python` for a Alpine based Python installation (~203 MB, built on top of `codex`)
 - `DockerFile.swift` for an Ubuntu based Swift installation (~1.41 GB)
-- `DockerFile.office` for Alpine + Python + Office tooling (~417 MB)
+- `DockerFile.office` for Alpine + Python + Office tooling (~417 MB, built on top of `codex-python`)
+
+The Alpine-based images are layered for incremental builds: `codex` -> `codex-python` -> `codex-office`.
 
 The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
 Further the build process is going to copy the `config.toml` file into the container at `/home/coder/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address 192.168.64.1.
 
-Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-swift`, and `codex-office` from the corresponding `DockerFile`:
+Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-swift`, and `codex-office` from the corresponding `DockerFile` (build the Alpine images in order so the bases exist):
 
 ```bash
 container build -t codex -f DockerFile
 container build -t codex-python -f DockerFile.python
-container build -t codex-swift -f DockerFile.swift
 container build -t codex-office -f DockerFile.office
+container build -t codex-swift -f DockerFile.swift
 
 Notes:
 - The Swift image includes `format` and `lint` wrappers for `swift-format` and initializes `swiftly` for toolchain management.
