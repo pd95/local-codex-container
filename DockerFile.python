@@ -13,6 +13,12 @@ RUN python3 -m venv --system-site-packages "$VIRTUAL_ENV" \
  && "$VIRTUAL_ENV/bin/python" -m pip install --no-cache-dir -U pip setuptools wheel \
  && chown -R coder:coder "$VIRTUAL_ENV"
 
+# Ensure login shells keep the venv on PATH
+RUN printf '%s\n' \
+  'export VIRTUAL_ENV=/opt/venv' \
+  'export PATH="/opt/venv/bin:$PATH"' \
+  > /etc/profile.d/venv.sh
+
 # Ensure venv is the default python/pip for all processes (including Codex runs)
 ENV PATH="$VIRTUAL_ENV/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1
