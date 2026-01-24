@@ -21,17 +21,15 @@ RUN npm install -g pptxgenjs \
     && npm cache clean --force
 
 # Ensure global node modules resolve in scripts
+ENV NODE_PATH=/usr/lib/node_modules:/usr/local/lib/node_modules
 RUN printf '%s\n' \
-  'export NODE_PATH=/usr/lib/node_modules' \
+  'export NODE_PATH=/usr/lib/node_modules:/usr/local/lib/node_modules' \
   > /etc/profile.d/node_path.sh
 
 # Baseline extra pip packages you want available
 RUN "$VIRTUAL_ENV/bin/pip" install --no-cache-dir \
     python-docx pytest xlrd \
  && chown -R coder:coder "$VIRTUAL_ENV"
-
-# Make NODE_PATH visible for non-login commands
-ENV NODE_PATH=/usr/lib/node_modules
 
 USER coder
 WORKDIR /workdir
