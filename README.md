@@ -57,6 +57,9 @@ codexctl build
 # Run Codex for the current directory (persistent by default)
 codexctl run
 
+# Run Codex for a specific directory
+codexctl run --workdir /path/to/project
+
 # Run with a specific image
 codexctl run --image codex-office
 
