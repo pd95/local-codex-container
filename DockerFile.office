@@ -9,9 +9,10 @@ RUN apk add --no-cache \
     build-base python3-dev musl-dev \
     fontconfig ttf-dejavu \
     freetype libpng jpeg zlib \
-    py3-numpy py3-pandas py3-matplotlib \
-    py3-pypdf py3-pdfminer \
-    py3-reportlab py3-pillow py3-openpyxl py3-xlsxwriter
+    py3-numpy py3-pandas py3-matplotlib py3-pytest \
+    py3-pypdf py3-pdfminer py3-mupdf \
+    py3-reportlab py3-pillow py3-openpyxl py3-xlsxwriter \
+    poppler-utils tesseract-ocr ghostscript pandoc-cli
 
 # --- PPTX generator ---
 RUN npm install -g pptxgenjs \
@@ -28,7 +29,7 @@ RUN printf '%s\n' \
 
 # Baseline extra pip packages you want available
 RUN "$VIRTUAL_ENV/bin/pip" install --no-cache-dir \
-    python-docx pytest xlrd \
+    python-docx python-pptx xlrd pdfplumber \
  && chown -R coder:coder "$VIRTUAL_ENV"
 
 USER coder
