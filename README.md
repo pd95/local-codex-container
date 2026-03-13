@@ -88,7 +88,7 @@ Note: `--cmd` consumes the remaining arguments and cannot be combined with `--sh
 
 Note: `CODEX_SHELL` is an environment variable to override the default shell used by `run --shell` and `exec` (default is `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
 
-Note: `--update` upgrades `@openai/codex` inside the target container before starting. This is convenient for quick refreshes of a specific container, while `codexctl build --rebuild` remains the persistent way to refresh image content.
+Note: `--update` upgrades `@openai/codex` inside the target container before starting. If the target container does not exist yet, `codexctl run --update` creates it first and then applies the update. With `--temp`, the update is ephemeral and removed when the temporary container exits. This is convenient for quick refreshes of a specific container, while `codexctl build --rebuild` remains the persistent way to refresh image content.
 
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 

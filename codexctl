@@ -194,7 +194,7 @@ Options:
   --workdir PATH  Host directory to mount at /workdir (default: cwd)
   --openai        Use OpenAI mode (device auth)
   --auth          Force OpenAI login flow
-  --update        Update @openai/codex in the container before launch
+  --update        Update @openai/codex in the target container before launch
   --temp          Create a throwaway container (auto-removed after exit)
   --read-only     Mount workdir as read-only (requires new container)
   --shell         Start a shell (default shell) instead of default CMD
