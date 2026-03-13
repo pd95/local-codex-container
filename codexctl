@@ -104,6 +104,88 @@ PY
   python_exec "$script" || echo "unknown"
 }
 
+container_upgrade_info() {
+  local script
+  script="$(cat <<'PY'
+import json
+import sys
+
+def lookup(data, *paths):
+    for path in paths:
+        cur = data
+        ok = True
+        for part in path:
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                ok = False
+                break
+        if ok and cur not in (None, ""):
+            return cur
+    return ""
+
+def string_value(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("name", "reference", "image", "imageName", "id"):
+            inner = value.get(key)
+            if isinstance(inner, str) and inner:
+                return inner
+    return ""
+
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    print("\t\t\t\t")
+    sys.exit(0)
+
+if isinstance(data, list) and data:
+    data = data[0]
+
+config = data.get("configuration") or data
+mounts = config.get("mounts") or []
+
+image = string_value(
+    lookup(data, ("image", "name"))
+    or lookup(config, ("image", "name"))
+    or lookup(data, ("image",))
+    or lookup(config, ("image",))
+    or lookup(data, ("imageReference",))
+    or lookup(config, ("imageReference",))
+)
+workdir = ""
+mount_mode = "unknown"
+for mount in mounts:
+    target = mount.get("destination") or mount.get("dst") or mount.get("target") or ""
+    if target != "/workdir":
+        continue
+    workdir = mount.get("source") or mount.get("src") or ""
+    opts = mount.get("options") or []
+    if isinstance(opts, str):
+        opts = [opts]
+    mount_mode = "ro" if "ro" in opts or "readonly" in opts else "rw"
+    break
+
+cpus = (
+    lookup(config, ("cpus",))
+    or lookup(config, ("resources", "cpus"))
+    or lookup(data, ("cpus",))
+    or lookup(data, ("resources", "cpus"))
+)
+memory = (
+    lookup(config, ("memory",))
+    or lookup(config, ("resources", "memory"))
+    or lookup(data, ("memory",))
+    or lookup(data, ("resources", "memory"))
+)
+
+print(f"{image}\t{workdir}\t{mount_mode}\t{cpus}\t{memory}")
+PY
+)"
+  python_exec "$script" || echo -e "\t\t\t\t"
+}
+
 validate_mount_mode() {
   local name="$1"
   local read_only="$2"
@@ -131,7 +213,10 @@ image_list() {
 }
 
 image_exists() {
-  image_list | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+  local image="$1"
+  "$CONTAINER_CMD" image inspect "$image" >/dev/null 2>&1 && return 0
+  "$CONTAINER_CMD" inspect "$image" >/dev/null 2>&1 && return 0
+  image_list | grep -q -E "(^|[[:space:]])$image([[:space:]]|$)"
 }
 
 default_name() {
@@ -159,6 +244,7 @@ Usage: codexctl <command> [options]
 Commands:
   build      Build Codex images
   run        Create/start a container for the current directory
+  upgrade    Recreate a container from the latest image while preserving config
   auth       Run OpenAI device auth flow and store in Keychain
   exec       Exec into a running container (default: bash)
   su-exec    Exec into a running container as root (default: bash)
@@ -201,6 +287,17 @@ Options:
   --cmd ...       Run a custom command (must be last; cannot combine with --shell)
   --cpu NUM       CPU cores for container
   --mem SIZE      Memory limit (e.g. 8G)
+EOF
+}
+
+usage_upgrade() {
+  cat <<'EOF'
+Usage: codexctl upgrade [options]
+
+Options:
+  --name NAME         Container name (default: codex-<dir>)
+  --image NAME        Image to use for recreation (default: existing container image)
+  --backup-image NAME Backup image name for container export (default: <name>-backup-<timestamp>)
 EOF
 }
 
@@ -378,6 +475,28 @@ run_auth_flow() {
   "$CONTAINER_CMD" rm "$auth_name"
   created=0
   trap - EXIT
+}
+
+backup_codex_config() {
+  local name="$1"
+  local backup_file="$2"
+  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -d /home/coder/.codex; then
+    return 0
+  fi
+  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" sh -lc 'cd /home/coder && tar -cf - .codex' >"$backup_file"
+}
+
+restore_codex_config() {
+  local name="$1"
+  local backup_file="$2"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'mkdir -p /home/coder && chown coder:coder /home/coder'
+  if [ ! -s "$backup_file" ]; then
+    "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'mkdir -p /home/coder/.codex && chown -R coder:coder /home/coder/.codex'
+    return 0
+  fi
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'rm -rf /home/coder/.codex && mkdir -p /home/coder'
+  "$CONTAINER_CMD" exec -i -u 0 "$name" sh -lc 'cd /home/coder && tar -xf -' <"$backup_file"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'chown -R coder:coder /home/coder/.codex'
 }
 
 ensure_keychain() {
@@ -750,6 +869,121 @@ auth_cmd() {
   echo "Auth updated. Restart any running --openai containers to pick up the new token." >&2
 }
 
+upgrade_cmd() {
+  local name=""
+  local image=""
+  local backup_image=""
+  local current_image=""
+  local workdir=""
+  local mount_mode=""
+  local cpu=""
+  local mem=""
+  local read_only=0
+  local was_running=0
+  local started_for_backup=0
+  local inspect_info=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --image) image="$2"; shift 2 ;;
+      --backup-image) backup_image="$2"; shift 2 ;;
+      --help) usage_upgrade; return 0 ;;
+      *) die "Unknown option for upgrade: $1" ;;
+    esac
+  done
+
+  require_container
+
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  inspect_info="$("$CONTAINER_CMD" inspect "$name" 2>/dev/null | container_upgrade_info)"
+  IFS=$'\t' read -r current_image workdir mount_mode cpu mem <<<"$inspect_info"
+  [ -n "$current_image" ] || die "Unable to determine image for $name"
+  [ -n "$workdir" ] || die "Unable to determine /workdir mount source for $name"
+
+  if [ "$mount_mode" = "ro" ]; then
+    read_only=1
+  elif [ "$mount_mode" != "rw" ]; then
+    die "Unable to determine mount mode for $name"
+  fi
+
+  [ -n "$image" ] || image="$current_image"
+  image_exists "$image" || die "Image not found: $image"
+  [ -e "$workdir" ] || die "Preserved /workdir source does not exist: $workdir"
+  [ -d "$workdir" ] || die "Preserved /workdir source is not a directory: $workdir"
+  if [ -z "$backup_image" ]; then
+    backup_image="$(sanitize_container_name "${name}-backup-$(date -u +%Y%m%d%H%M%S)")"
+  fi
+
+  local backup_dir
+  local backup_file
+  backup_dir="$(mktemp -d)"
+  backup_file="$backup_dir/codex-config.tar"
+  trap 'rm -rf "$backup_dir"' RETURN
+
+  if container_running "$name"; then
+    was_running=1
+  fi
+
+  if [ "$was_running" -eq 0 ]; then
+    echo "Starting container for config backup: $name" >&2
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_backup=1
+  fi
+
+  echo "Backing up /home/coder/.codex from $name" >&2
+  backup_codex_config "$name" "$backup_file"
+
+  if [ "$was_running" -eq 1 ] || [ "$started_for_backup" -eq 1 ]; then
+    echo "Stopping container: $name" >&2
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+
+  echo "Exporting container state to image: $backup_image" >&2
+  "$CONTAINER_CMD" export --image "$backup_image" "$name"
+
+  echo "Removing container: $name" >&2
+  "$CONTAINER_CMD" rm "$name" >/dev/null
+
+  echo "Recreating container: $name" >&2
+  local create_cmd=("$CONTAINER_CMD" create -t)
+  if [ -n "$cpu" ]; then
+    create_cmd+=(-c "$cpu")
+  fi
+  if [ -n "$mem" ]; then
+    create_cmd+=(-m "$mem")
+  fi
+  local mount_opts="type=bind,src=$workdir,dst=/workdir"
+  if [ "$read_only" -eq 1 ]; then
+    mount_opts="${mount_opts},readonly"
+  fi
+  create_cmd+=(
+    --name "$name"
+    --mount "$mount_opts"
+    "$image" sh -c 'sleep infinity'
+  )
+  "${create_cmd[@]}"
+
+  echo "Starting container: $name" >&2
+  "$CONTAINER_CMD" start "$name" >/dev/null
+
+  echo "Restoring /home/coder/.codex into $name" >&2
+  restore_codex_config "$name" "$backup_file"
+
+  if [ "$was_running" -eq 0 ]; then
+    echo "Stopping container: $name" >&2
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+
+  echo "Upgrade complete: $name (backup image: $backup_image)" >&2
+}
+
 exec_cmd() {
   local name=""
   local cmd=()
@@ -861,6 +1095,7 @@ cmd="${1:-}"
 case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
+  upgrade) shift; upgrade_cmd "$@" ;;
   auth) shift; auth_cmd "$@" ;;
   exec) shift; exec_cmd "$@" ;;
   su-exec) shift; su_exec_cmd "$@" ;;

@@ -15,6 +15,48 @@ codexctl run --image codex-office --temp --workdir testing/codex-office --cmd ba
 codexctl run --image codex-swift --temp --workdir testing/codex-swift --cmd bash -lc 'swift --version && swift-format --version && command -v format >/dev/null && command -v lint >/dev/null'
 ```
 
+## Upgrade flow
+
+Use a persistent container so there is state to preserve, then recreate it with `codexctl upgrade`.
+
+```bash
+codexctl run --name codex-upgrade-smoke --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo upgrade-ok >/home/coder/.codex/upgrade-smoke.txt'
+codexctl upgrade --name codex-upgrade-smoke
+codexctl run --name codex-upgrade-smoke --image codex --workdir testing/codex --cmd bash -lc 'cat /home/coder/.codex/upgrade-smoke.txt'
+```
+
+Expected output includes `upgrade-ok`, and `codexctl upgrade` should print the backup image name it created via `container export`.
+
+For a running-container upgrade, keep the container alive before upgrading:
+
+```bash
+codexctl run --name codex-upgrade-live --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo live-upgrade-ok >/home/coder/.codex/live-upgrade-smoke.txt'
+codexctl start --name codex-upgrade-live
+codexctl upgrade --name codex-upgrade-live
+codexctl exec --name codex-upgrade-live -- cat /home/coder/.codex/live-upgrade-smoke.txt
+```
+
+Expected output includes `live-upgrade-ok`, and the container should still appear in `container ls` after the upgrade.
+
+Upgrade preflight failures should also abort before the original container is removed:
+
+```bash
+codexctl upgrade --name codex-upgrade-live --image does-not-exist
+mkdir -p /tmp/codex-upgrade-workdir
+cd /tmp/codex-upgrade-workdir
+codexctl run --name codex-upgrade-workdir-test --image codex --workdir /tmp/codex-upgrade-workdir --cmd bash -lc 'mkdir -p /home/coder/.codex && echo workdir-check >/home/coder/.codex/workdir-check.txt'
+mv /tmp/codex-upgrade-workdir /tmp/codex-upgrade-workdir-moved
+codexctl upgrade --name codex-upgrade-workdir-test
+printf 'x' > /tmp/codex-upgrade-workdir
+codexctl upgrade --name codex-upgrade-workdir-test
+```
+
+Expected output includes:
+
+- `Error: Image not found: does-not-exist`
+- `Error: Preserved /workdir source does not exist: /tmp/codex-upgrade-workdir`
+- `Error: Preserved /workdir source is not a directory: /tmp/codex-upgrade-workdir`
+
 ## Codex CLI sanity checks (interactive)
 
 These steps confirm Codex itself can connect to the local model, execute shell commands,

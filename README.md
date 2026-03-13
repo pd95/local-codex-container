@@ -75,6 +75,9 @@ codexctl run --openai
 # Update codex package in the running container
 codexctl run --update
 
+# Recreate a container from the latest image while preserving config
+codexctl upgrade
+
 # Start a shell inside the container
 codexctl run --shell
 
@@ -89,6 +92,8 @@ Note: `--cmd` consumes the remaining arguments and cannot be combined with `--sh
 Note: `CODEX_SHELL` is an environment variable to override the default shell used by `run --shell` and `exec` (default is `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default.
 
 Note: `--update` upgrades `@openai/codex` inside the target container before starting. If the target container does not exist yet, `codexctl run --update` creates it first and then applies the update. With `--temp`, the update is ephemeral and removed when the temporary container exits. This is convenient for quick refreshes of a specific container, while `codexctl build --rebuild` remains the persistent way to refresh image content.
+
+Note: `codexctl upgrade` is the persistent refresh path for an existing named container. It exports the current container to a backup image, saves `/home/coder/.codex`, removes and recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state. This flow is verified for both stopped containers and already running containers.
 
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
@@ -120,6 +125,7 @@ When to use which image:
 
 ```bash
 codexctl auth              # run device-auth and store in Keychain
+codexctl upgrade           # recreate the current container from the latest image
 codexctl exec              # shell into running container
 codexctl ls                # list containers
 codexctl rm                # remove the default container for this directory
