@@ -95,6 +95,8 @@ Note: `--update` upgrades `@openai/codex` inside the target container before sta
 
 Note: `codexctl upgrade` is the persistent refresh path for an existing named container. It exports the current container to a backup image, saves `/home/coder/.codex`, removes and recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state. This flow is verified for both stopped containers and already running containers.
 
+Note: if an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `codexctl upgrade` stops and asks you to re-run with `--overwrite-config`. That mode replaces `~/.codex/config.toml` from the repo default and recreates the AGENTS symlink.
+
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
@@ -126,6 +128,7 @@ When to use which image:
 ```bash
 codexctl auth              # run device-auth and store in Keychain
 codexctl upgrade           # recreate the current container from the latest image
+codexctl upgrade --overwrite-config  # reset config.toml and recreate ~/.codex/AGENTS.md symlink
 codexctl exec              # shell into running container
 codexctl ls                # list containers
 codexctl rm                # remove the default container for this directory

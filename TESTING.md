@@ -85,6 +85,20 @@ Expected output includes:
 - `Error: Preserved /workdir source does not exist: /tmp/codex-upgrade-workdir`
 - `Error: Preserved /workdir source is not a directory: /tmp/codex-upgrade-workdir`
 
+AGENTS migration behavior should also be verified:
+
+```bash
+codexctl run --name codex-upgrade-agents-test --image codex --workdir testing/codex --cmd bash -lc 'rm -f /home/coder/.codex/AGENTS.md && printf "legacy-agents\\n" >/home/coder/.codex/AGENTS.md'
+codexctl upgrade --name codex-upgrade-agents-test
+codexctl upgrade --name codex-upgrade-agents-test --overwrite-config
+codexctl run --name codex-upgrade-agents-test --image codex --workdir testing/codex --cmd bash -lc 'test -L /home/coder/.codex/AGENTS.md && readlink /home/coder/.codex/AGENTS.md && grep -q "trust_level = \"trusted\"" /home/coder/.codex/config.toml'
+```
+
+Expected output includes:
+
+- `Error: Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config`
+- `/etc/codexctl/image.md`
+
 ## Codex CLI sanity checks (interactive)
 
 These steps confirm Codex itself can connect to the local model, execute shell commands,
