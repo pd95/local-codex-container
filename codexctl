@@ -292,6 +292,7 @@ Options:
   --workdir PATH  Host directory to mount at /workdir (default: cwd)
   --openai        Use OpenAI mode (device auth)
   --auth          Force OpenAI login flow
+  --reset-config  Replace ~/.codex/config.toml from the image and recreate ~/.codex/AGENTS.md as a symlink
   --update        Update @openai/codex in the target container before launch
   --temp          Create a throwaway container (auto-removed after exit)
   --read-only     Mount workdir as read-only (requires new container)
@@ -310,7 +311,7 @@ Options:
   --name NAME         Container name (default: codex-<dir>)
   --image NAME        Image to use for recreation (default: existing container image)
   --backup-image NAME Backup image name for container export (default: <name>-backup-<timestamp>)
-  --overwrite-config  Replace ~/.codex/config.toml from the repo default and recreate ~/.codex/AGENTS.md as a symlink
+  --overwrite-config  Replace ~/.codex/config.toml from the upgraded image and recreate ~/.codex/AGENTS.md as a symlink
 EOF
 }
 
@@ -532,7 +533,10 @@ codex_agents_state() {
 overwrite_codex_config() {
   local name="$1"
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'mkdir -p /home/coder/.codex'
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'cat > /home/coder/.codex/config.toml' <"$SCRIPT_DIR/config.toml"
+  if ! "$CONTAINER_CMD" exec "$name" sh -lc 'test -f /etc/codexctl/config.toml'; then
+    die "Image does not include /etc/codexctl/config.toml for overwrite in $name"
+  fi
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'cp /etc/codexctl/config.toml /home/coder/.codex/config.toml'
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md && chown -h coder:coder /home/coder/.codex/AGENTS.md && chown coder:coder /home/coder/.codex/config.toml'
 }
 
@@ -659,7 +663,8 @@ run_container() {
   local workdir="$8"
   local pre_exec="$9"
   local post_exec="${10}"
-  shift 10
+  local reset_config="${11}"
+  shift 11
   local cmd=("$@")
   local exit_code=0
   local started=0
@@ -729,6 +734,9 @@ run_container() {
   if [ -n "$pre_exec" ]; then
     "$pre_exec" "$actual_name"
   fi
+  if [ "$reset_config" -eq 1 ]; then
+    overwrite_codex_config "$actual_name"
+  fi
   run_exec
   if [ -n "$post_exec" ]; then
     if ! "$post_exec" "$actual_name"; then
@@ -761,7 +769,8 @@ run_mode() {
   local mem="$9"
   local read_only="${10}"
   local workdir="${11}"
-  shift 11
+  local reset_config="${12}"
+  shift 12
   local -a cmd_override=("$@")
   local pre_exec=""
   local post_exec=""
@@ -788,7 +797,7 @@ run_mode() {
     shell=0
   fi
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$workdir" "$pre_exec" "$post_exec" "${cmd[@]}"
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$workdir" "$pre_exec" "$post_exec" "$reset_config" "${cmd[@]}"
 }
 
 openai_pre_exec() {
@@ -826,6 +835,7 @@ run_cmd() {
   local update=0
   local temp=0
   local shell=0
+  local reset_config=0
   local read_only=0
   local cpu=""
   local mem=""
@@ -841,6 +851,7 @@ run_cmd() {
       --workdir) workdir="$2"; shift 2 ;;
       --openai) openai=1; shift ;;
       --auth) auth=1; shift ;;
+      --reset-config) reset_config=1; shift ;;
       --update) update=1; shift ;;
       --temp) temp=1; shift ;;
       --read-only) read_only=1; shift ;;
@@ -882,7 +893,7 @@ run_cmd() {
     name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
   fi
 
-  run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" ${cmd_override[@]+"${cmd_override[@]}"}
+  run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" ${cmd_override[@]+"${cmd_override[@]}"}
 }
 
 auth_cmd() {

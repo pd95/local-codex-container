@@ -24,6 +24,15 @@ codexctl run --image codex-office --temp --workdir testing/codex-office --cmd ba
 codexctl run --image codex-swift --temp --workdir testing/codex-swift --cmd bash -lc 'test -f /etc/codexctl/image.md && sed -n "1,20p" /etc/codexctl/image.md'
 ```
 
+Also verify the image-owned config is present at `/etc/codexctl/config.toml` and matches the default user config inside the image:
+
+```bash
+codexctl run --image codex --temp --workdir testing/codex --cmd bash -lc 'test -f /etc/codexctl/config.toml && diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml'
+codexctl run --image codex-python --temp --workdir testing/codex-python --cmd bash -lc 'test -f /etc/codexctl/config.toml && diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml'
+codexctl run --image codex-office --temp --workdir testing/codex-office --cmd bash -lc 'test -f /etc/codexctl/config.toml && diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml'
+codexctl run --image codex-swift --temp --workdir testing/codex-swift --cmd bash -lc 'test -f /etc/codexctl/config.toml && diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml'
+```
+
 Also verify global AGENTS guidance points at the image metadata file:
 
 ```bash
@@ -98,6 +107,32 @@ Expected output includes:
 
 - `Error: Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config`
 - `/etc/codexctl/image.md`
+
+`run --reset-config` should restore config from the image before launching container session:
+
+```bash
+codexctl run --name codex-run-reset-config --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && printf "# legacy-config\n" >/home/coder/.codex/config.toml'
+codexctl run --name codex-run-reset-config --image codex --workdir testing/codex --reset-config --cmd bash -lc 'if diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml && grep -q "trust_level = \"trusted\"" /home/coder/.codex/config.toml; then echo reset-config-ok; else exit 1; fi'
+```
+
+Expected output after the reset run should include:
+
+- `reset-config-ok`
+
+`--overwrite-config` now sources from the upgraded image’s immutable config; verify it by changing user config, upgrading, and checking that the restored `config.toml` matches `/etc/codexctl/config.toml`:
+
+```bash
+codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && printf "# PRE-OVERWRITE\n[ollama]\nhost = \"http://127.0.0.1:11434\"\n" > /home/coder/.codex/config.toml'
+codexctl upgrade --name codex-upgrade-overwrite-config-test
+codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'cp /etc/codexctl/config.toml /tmp/image-config.toml && cp /home/coder/.codex/config.toml /tmp/container-config.toml && sha256sum /tmp/image-config.toml /tmp/container-config.toml'
+codexctl upgrade --name codex-upgrade-overwrite-config-test --overwrite-config
+codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'cp /etc/codexctl/config.toml /tmp/image-config.toml && cp /home/coder/.codex/config.toml /tmp/container-config.toml && diff -q /tmp/image-config.toml /tmp/container-config.toml && grep -q "trust_level = \"trusted\"" /home/coder/.codex/config.toml'
+```
+
+Expected output after the overwrite upgrade should show:
+
+- matching hash line for `/tmp/image-config.toml` and `/tmp/container-config.toml`
+- no diff output from `diff -q` (identical files)
 
 ## Codex CLI sanity checks (interactive)
 

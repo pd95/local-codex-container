@@ -95,7 +95,7 @@ Note: `--update` upgrades `@openai/codex` inside the target container before sta
 
 Note: `codexctl upgrade` is the persistent refresh path for an existing named container. It exports the current container to a backup image, saves `/home/coder/.codex`, removes and recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state. This flow is verified for both stopped containers and already running containers.
 
-Note: if an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `codexctl upgrade` stops and asks you to re-run with `--overwrite-config`. That mode replaces `~/.codex/config.toml` from the repo default and recreates the AGENTS symlink.
+Note: if an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `codexctl upgrade` stops and asks you to re-run with `--overwrite-config`. That mode replaces `~/.codex/config.toml` from the upgraded image and recreates the AGENTS symlink.
 
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
@@ -128,7 +128,7 @@ When to use which image:
 ```bash
 codexctl auth              # run device-auth and store in Keychain
 codexctl upgrade           # recreate the current container from the latest image
-codexctl upgrade --overwrite-config  # reset config.toml and recreate ~/.codex/AGENTS.md symlink
+codexctl upgrade --overwrite-config  # reset config.toml from upgraded image and recreate ~/.codex/AGENTS.md symlink
 codexctl exec              # shell into running container
 codexctl ls                # list containers
 codexctl rm                # remove the default container for this directory
@@ -170,7 +170,7 @@ The Alpine-based images are layered for incremental builds: `codex` -> `codex-py
 
 The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
-Further the build process copies `config.toml` into the container at `/home/coder/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address `192.168.64.1`.
+Further the build process copies `config.toml` into the container at `/home/coder/.codex/` so that codex will properly connect to the locally running Ollama instance on the `default` network's host IP address `192.168.64.1`, and also mirrors it into `/etc/codexctl/config.toml` so upgrade resets can source the image-owned default reliably.
 
 Each image also writes `/etc/codexctl/image.md` during build. That file describes the image name, build time, workspace conventions, and key built-in tools/toolchains. It intentionally lives outside `/home/coder/.codex`, so `codexctl upgrade` does not treat it as user state to back up and restore.
 

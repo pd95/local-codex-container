@@ -25,6 +25,7 @@ ENV HOME=/home/coder
 COPY --chown=coder:coder config.toml /home/coder/.codex/
 
 RUN mkdir -p /etc/codexctl \
+ && cp /home/coder/.codex/config.toml /etc/codexctl/config.toml \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
  && cat > /etc/codexctl/image.md <<EOF
 You are running inside the \`codex\` default image.
