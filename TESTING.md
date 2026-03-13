@@ -134,6 +134,42 @@ Expected output after the overwrite upgrade should show:
 - matching hash line for `/tmp/image-config.toml` and `/tmp/container-config.toml`
 - no diff output from `diff -q` (identical files)
 
+## Image management
+
+Verify image discovery and retention behavior using `codexctl images`.
+
+```bash
+# Basic listing should be stable-tag and snapshot aware
+codexctl images
+codexctl images --latest
+
+# --all should include non-codex images and ignore container headers/metadata
+codexctl images --all
+```
+
+Expected output should include local codex family refs and timestamped snapshots.
+
+```bash
+# Create multiple upgrade backups for the same container to exercise backup-family pruning
+codexctl run --name codex-images-smoke --image codex --workdir testing/codex --cmd true
+codexctl upgrade --name codex-images-smoke
+codexctl upgrade --name codex-images-smoke
+
+# Upgrade backups should be listed as codexctl-owned refs
+codexctl images --backup
+```
+
+Expected output should include names matching `codex-*-backup-<timestamp>`, such as:
+
+- `codex-images-smoke-backup-20260313142437`
+
+```bash
+# Backup images are pruned by backup family in descending timestamp order
+codexctl images prune --backup --keep 1 --dry-run
+```
+
+Expected output should show `Would remove image:` lines only for older snapshot/backup refs and never stable tags.
+
 ## Codex CLI sanity checks (interactive)
 
 These steps confirm Codex itself can connect to the local model, execute shell commands,

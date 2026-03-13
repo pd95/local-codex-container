@@ -54,6 +54,9 @@ sudo ln -s "$PWD/codexctl" /usr/local/bin/    # link it to system directory
 # Build images once
 codexctl build
 
+# Snapshot current images without rebuilding
+codexctl build --snapshot
+
 # Run Codex for the current directory (persistent by default)
 codexctl run
 
@@ -62,6 +65,9 @@ codexctl run --workdir /path/to/project
 
 # Run with a specific image
 codexctl run --image codex-office
+
+# Run a specific historical build
+codexctl run --image codex:20260313-154500
 
 # Read-only workdir mount
 codexctl run --read-only
@@ -78,6 +84,12 @@ codexctl run --update
 # Recreate a container from the latest image while preserving config
 codexctl upgrade
 
+# List stable tags, timestamped snapshots, and backup images (like upgrade backups)
+codexctl images
+
+# Prune old snapshot tags by family while keeping one newest (dry-run)
+codexctl images prune --keep 1 --dry-run
+
 # Start a shell inside the container
 codexctl run --shell
 
@@ -85,7 +97,9 @@ codexctl run --shell
 codexctl run --cmd bash
 ```
 
-Note: `codexctl build` produces the `codex`, `codex-python`, `codex-swift`, and `codex-office` images by default.
+Note: `codexctl build` produces the `codex`, `codex-python`, `codex-swift`, and `codex-office` images by default. Each build also adds immutable UTC timestamp tags such as `codex:20260313-154500`, so you can keep multiple builds side by side while `codex` continues to point at the newest local build.
+
+Note: `codexctl build --snapshot` adds fresh UTC timestamp tags for already existing images without rebuilding them. Use this when you want side-by-side references for testing but do not want to refresh the image contents.
 
 Note: `--cmd` consumes the remaining arguments and cannot be combined with `--shell`, so place it last. If you pass a single quoted string containing spaces, it runs via `$CODEX_SHELL -lc`. This same behavior applies to `codexctl exec`.
 
@@ -100,6 +114,12 @@ Note: if an older container has `~/.codex/AGENTS.md` as a regular file instead o
 Note: The `--rebuild`, `--refresh-base`, and `--pull-base` options are for occasional refreshes when you want to pick up newer Codex or base image updates. See the build cache section below for guidance.
 
 Note: `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
+
+`codexctl images` is the dedicated image-management entry point.
+It lists local `codex` image tags (`codex`, `codex-python`, `codex-swift`, `codex-office`), immutable timestamped snapshots (`codex:20260313-154500`), and upgrade backups (`codex-<name>-backup-20260313142437`) as part of normal listing and pruning.
+`container image ls` output headers are already ignored, so no `NAME:TAG` filter is required.
+Use `--latest` to show only stable and newest snapshot per family.
+Use `codexctl images prune --keep N` to drop old snapshots/backups for selected families while preserving stable tags.
 
 #### Image selection
 
@@ -127,8 +147,11 @@ When to use which image:
 
 ```bash
 codexctl auth              # run device-auth and store in Keychain
+codexctl images            # list local codex image refs
+codexctl images --backup    # list local codex backup image refs
 codexctl upgrade           # recreate the current container from the latest image
 codexctl upgrade --overwrite-config  # reset config.toml from upgraded image and recreate ~/.codex/AGENTS.md symlink
+codexctl images prune --backup --keep 2 --dry-run  # preview backup pruning
 codexctl exec              # shell into running container
 codexctl ls                # list containers
 codexctl rm                # remove the default container for this directory
@@ -186,11 +209,22 @@ The image-specific `image.md` files describe the intended toolchain focus:
 Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-swift`, and `codex-office` from the corresponding `DockerFile` (build the Alpine images in order so the bases exist):
 
 ```bash
-container build -t codex -f DockerFile
-container build -t codex-python -f DockerFile.python
-container build -t codex-office -f DockerFile.office
-container build -t codex-swift -f DockerFile.swift
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
+container build -t codex -f DockerFile .
+container image tag codex "codex:${STAMP}"
+
+container build -t codex-python -f DockerFile.python .
+container image tag codex-python "codex-python:${STAMP}"
+
+container build -t codex-office -f DockerFile.office .
+container image tag codex-office "codex-office:${STAMP}"
+
+container build -t codex-swift -f DockerFile.swift .
+container image tag codex-swift "codex-swift:${STAMP}"
+```
+
+This keeps the stable image names for normal use and also creates immutable timestamped tags for A/B testing and rollback.
 Notes:
 - The Swift image includes `format` and `lint` wrappers for `swift-format` and initializes `swiftly` for toolchain management.
 - The Office image sets up a writable venv at `/opt/venv` and puts it on `PATH` by default.
@@ -199,6 +233,7 @@ Notes:
 #### Build cache behavior (codexctl)
 
 - `--rebuild` disables Dockerfile layer cache (`--no-cache`). Use when Codex warns you about an outdated version and you want all new containers to start from a fresh image.
+- `--snapshot` creates a new timestamp tag for the current stable image without rebuilding it. Use when you want an immutable test reference for the image you already have locally.
 - `--pull-base` pulls the latest base image tag before building. Use when you want to update base images without deleting them first (preferred).
 - `--refresh-base` deletes the base image first, forcing a re-fetch on build. Use when you need a brute-force refresh; this may fail if the base image is still referenced by containers.
 

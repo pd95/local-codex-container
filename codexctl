@@ -8,6 +8,7 @@ AUTH_NAME_PREFIX="codex-openai-auth-"
 DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="gpt-oss"
 DEFAULT_CODEX_CMD=(codex)
+CODEX_IMAGE_FAMILIES=(codex codex-python codex-swift codex-office)
 SETPRIV_ARGS=(setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs --)
 
 resolve_script_path() {
@@ -219,6 +220,124 @@ image_exists() {
   image_list | grep -q -E "(^|[[:space:]])$image([[:space:]]|$)"
 }
 
+is_codex_image_family() {
+  case "$1" in
+    codex|codex-python|codex-swift|codex-office) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_codex_image_filter_name() {
+  local image_filter_name="$1"
+  if is_codex_image_family "$image_filter_name"; then
+    return 0
+  fi
+  [[ "$image_filter_name" == codex-* ]]
+}
+
+is_codex_backup_image_ref() {
+  [[ "$1" =~ ^codex-.*-backup-[0-9]{14}$ ]]
+}
+
+codex_backup_base() {
+  local image_ref="$1"
+  if [[ "$image_ref" =~ ^(.*)-backup-[0-9]{14}$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  fi
+}
+
+image_ref_matches_filter() {
+  local image_ref="$1"
+  local image_filter="$2"
+  local family
+  local backup_base
+
+  if [ -z "$image_filter" ]; then
+    return 0
+  fi
+
+  family="${image_ref%%:*}"
+  if is_codex_image_family "$family"; then
+    [ "$family" = "$image_filter" ]
+    return
+  fi
+  if ! is_codex_backup_image_ref "$family"; then
+    return 1
+  fi
+  backup_base="$(codex_backup_base "$family")"
+  if [ "$backup_base" = "$image_filter" ]; then
+    return 0
+  fi
+  return 1
+}
+
+image_prune_group() {
+  local image_ref="$1"
+  local family
+  family="${image_ref%%:*}"
+  if is_codex_backup_image_ref "$family"; then
+    if [[ "$family" =~ ^(.*-backup)-[0-9]{14}$ ]]; then
+      echo "${BASH_REMATCH[1]}"
+    else
+      echo "$family"
+    fi
+    return
+  fi
+  echo "$family"
+}
+
+is_codex_image_ref() {
+  local image_ref="$1"
+  local family
+  local tag=""
+
+  family="$image_ref"
+  if [[ "$image_ref" == *:* ]]; then
+    family="${image_ref%%:*}"
+    tag="${image_ref#*:}"
+  fi
+  if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
+    if is_codex_image_family "$family"; then
+      return 0
+    fi
+    if is_codex_backup_image_ref "$family"; then
+      return 0
+    fi
+    return 1
+  fi
+  is_codex_image_family "$family" || return 1
+  [ -n "$(timestamp_for_image_ref "$image_ref")" ]
+}
+
+parse_image_list() {
+  image_list | awk '
+    NR == 1 { next }
+    NF >= 2 {
+      repo = $1
+      tag = $2
+      if (repo == "" || repo == "<none>" || tag == "" || tag == "<none>") {
+        next
+      }
+      if (tag == "latest") {
+        print repo
+      } else {
+        print repo ":" tag
+      }
+    }
+  '
+}
+
+timestamp_for_image_ref() {
+  local image_ref="$1"
+  if [[ "$image_ref" =~ ^[^:]+:([0-9]{8}-[0-9]{6})$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$image_ref" =~ ^(.*)-backup-([0-9]{8})([0-9]{6})$ ]]; then
+    echo "${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+  fi
+}
+
 default_name() {
   local prefix="$1"
   local path="${2:-$PWD}"
@@ -265,6 +384,7 @@ Commands:
   restart    Restart a container
   rm         Remove a container
   ls         List containers
+  images     List local Codex images or prune old timestamp tags
 
 Run "codexctl <command> --help" for command-specific options.
 EOF
@@ -272,13 +392,17 @@ EOF
 
 usage_build() {
   cat <<'EOF'
-Usage: codexctl build [--image NAME] [--rebuild] [--pull-base] [--refresh-base]
+Usage: codexctl build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
 
 Options:
   --image NAME  One of: codex, codex-python, codex-swift, codex-office (default: all)
   --rebuild     Rebuild images even if they already exist (disables build cache)
+  --snapshot    Add a fresh UTC timestamp tag for existing images without rebuilding
   --pull-base     Pull the base image before building
   --refresh-base  Remove the base image first so it is re-fetched
+
+Each successful build keeps the stable image name (for example `codex`) and
+also adds an immutable UTC timestamp tag (for example `codex:20260313-154500`).
 EOF
 }
 
@@ -353,16 +477,416 @@ Usage: codexctl <start|stop|restart|rm> [--name NAME]
 EOF
 }
 
+usage_images() {
+  cat <<'EOF'
+Usage: codexctl images [options]
+       codexctl images prune [options]
+
+Commands:
+  prune        Remove old timestamp-tagged Codex images
+
+Options for `images`:
+  --image NAME  One of: codex, codex-python, codex-swift, codex-office, or a backup base (example: codex-upgrade-smoke from codex-upgrade-smoke-backup-20260313123456)
+  --backup      Show only backup image refs
+  --all         Include non-Codex images
+  --latest      Show only stable tags and newest timestamp tag per family
+
+Options for `images prune`:
+  --keep N      Keep the newest N timestamp tags per family (default: 1)
+  --image NAME  Limit pruning to one image family or backup base
+  --backup      Prune only backup image refs
+  --dry-run     Print images that would be deleted
+EOF
+}
+
+usage_images_prune() {
+  cat <<'EOF'
+Usage: codexctl images prune [options]
+
+Options:
+  --keep N      Keep the newest N timestamp tags per family (default: 1)
+  --image NAME  Limit pruning to one image family or backup base
+  --backup      Prune only backup image refs
+  --dry-run     Print images that would be deleted
+EOF
+}
+
+images_print_latest() {
+  local refs="$1"
+  local image_filter="$2"
+  local backup_only="$3"
+  local family
+  local family_refs
+  local newest
+  local backup_bases
+  local backup_base
+  local backup_family_refs
+
+  if [ "$backup_only" -eq 1 ]; then
+    backup_bases="$(printf '%s\n' "$refs" | while IFS= read -r family_ref; do
+      if ! is_codex_backup_image_ref "${family_ref%%:*}"; then
+        continue
+      fi
+      if [ -n "$image_filter" ] && ! image_ref_matches_filter "$family_ref" "$image_filter"; then
+        continue
+      fi
+      image_prune_group "$family_ref"
+    done | sort -u)"
+    [ -z "$backup_bases" ] && return 0
+
+    while IFS= read -r backup_base; do
+      [ -z "$backup_base" ] && continue
+      backup_family_refs="$(printf '%s\n' "$refs" | while IFS= read -r family_ref; do
+        if ! is_codex_backup_image_ref "${family_ref%%:*}"; then
+          continue
+        fi
+        if [ "$backup_base" != "$(image_prune_group "$family_ref")" ]; then
+          continue
+        fi
+        echo "$family_ref"
+      done | sort -r || true)"
+      if [ -n "$backup_family_refs" ]; then
+        printf '%s\n' "$backup_family_refs"
+      fi
+    done <<< "$backup_bases"
+    return 0
+  fi
+
+  for family in "${CODEX_IMAGE_FAMILIES[@]}"; do
+    if [ -n "$image_filter" ] && ! image_ref_matches_filter "$family" "$image_filter"; then
+      continue
+    fi
+    family_refs="$(printf '%s\n' "$refs" | awk -F: -v family="$family" '$1 == family { print }' || true)"
+    [ -z "$family_refs" ] && continue
+    if printf '%s\n' "$family_refs" | grep -qx "$family"; then
+      echo "$family"
+    fi
+    newest="$(printf '%s\n' "$family_refs" | grep -E "^${family}:[0-9]{8}-[0-9]{6}$" | sort -r | head -n 1 || true)"
+    if [ -n "$newest" ]; then
+      echo "$newest"
+    fi
+  done
+
+  backup_bases="$(printf '%s\n' "$refs" | while IFS= read -r family_ref; do
+    if ! is_codex_backup_image_ref "${family_ref%%:*}"; then
+      continue
+    fi
+    if [ -n "$image_filter" ] && ! image_ref_matches_filter "$family_ref" "$image_filter"; then
+      continue
+    fi
+    image_prune_group "$family_ref"
+  done | sort -u)"
+  [ -z "$backup_bases" ] && return 0
+
+  while IFS= read -r backup_base; do
+    [ -z "$backup_base" ] && continue
+    backup_family_refs="$(printf '%s\n' "$refs" | while IFS= read -r family_ref; do
+      if ! is_codex_backup_image_ref "${family_ref%%:*}"; then
+        continue
+      fi
+      if [ "$backup_base" != "$(image_prune_group "$family_ref")" ]; then
+        continue
+      fi
+      echo "$family_ref"
+    done || true)"
+    if [ -z "$backup_family_refs" ]; then
+      continue
+    fi
+    newest="$(printf '%s\n' "$backup_family_refs" | sort -r | head -n 1 || true)"
+    if [ -n "$newest" ]; then
+      echo "$newest"
+    fi
+  done <<< "$backup_bases"
+}
+
+images_print_sorted() {
+  local refs="$1"
+  local include_all="$2"
+  local image_filter="$3"
+  local backup_only="$4"
+  local family
+  local family_refs
+  local non_family_refs
+  local backup_bases
+  local backup_refs
+  local backup_base
+  local backup_ref
+
+  if [ "$backup_only" -eq 1 ]; then
+    backup_bases="$(printf '%s\n' "$refs" | while IFS= read -r backup_ref; do
+      if ! is_codex_backup_image_ref "${backup_ref%%:*}"; then
+        continue
+      fi
+      if [ -n "$image_filter" ] && ! image_ref_matches_filter "$backup_ref" "$image_filter"; then
+        continue
+      fi
+      image_prune_group "$backup_ref"
+    done | sort -u || true)"
+    if [ -n "$backup_bases" ]; then
+      while IFS= read -r backup_base; do
+        [ -z "$backup_base" ] && continue
+        backup_refs="$(printf '%s\n' "$refs" | while IFS= read -r backup_ref; do
+          if ! is_codex_backup_image_ref "${backup_ref%%:*}"; then
+            continue
+          fi
+          if [ "$backup_base" != "$(image_prune_group "$backup_ref")" ]; then
+            continue
+          fi
+          if [ -n "$image_filter" ] && ! image_ref_matches_filter "$backup_ref" "$image_filter"; then
+            continue
+          fi
+          echo "$backup_ref"
+        done | sort -r || true)"
+        if [ -n "$backup_refs" ]; then
+          printf '%s\n' "$backup_refs"
+        fi
+      done <<< "$backup_bases"
+    fi
+    return 0
+  fi
+
+  for family in "${CODEX_IMAGE_FAMILIES[@]}"; do
+    family_refs="$(printf '%s\n' "$refs" | awk -F: -v family="$family" '$1 == family { print }' || true)"
+    if [ -n "$image_filter" ]; then
+      family_refs="$(printf '%s\n' "$family_refs" | while IFS= read -r family_ref; do
+        if image_ref_matches_filter "$family_ref" "$image_filter"; then
+          echo "$family_ref"
+        fi
+      done || true)"
+    fi
+    [ -z "$family_refs" ] && continue
+    if printf '%s\n' "$family_refs" | grep -qx "$family"; then
+      echo "$family"
+    fi
+    printf '%s\n' "$family_refs" | awk -F: '$2 ~ /^[0-9]{8}-[0-9]{6}$/ { print }' | sort -r
+    printf '%s\n' "$family_refs" | awk -F: '$2 != "" && $2 !~ /^[0-9]{8}-[0-9]{6}$/ { print }'
+  done
+
+  if [ "$include_all" -eq 1 ] && [ -z "$image_filter" ]; then
+    non_family_refs="$(printf '%s\n' "$refs" | awk -F: '$1 != "codex" && $1 != "codex-python" && $1 != "codex-swift" && $1 != "codex-office" && $1 !~ /^codex-.*-backup-[0-9]{14}$/' || true)"
+    if [ -n "$non_family_refs" ]; then
+      printf '%s\n' "$non_family_refs"
+    fi
+  fi
+
+  backup_bases="$(printf '%s\n' "$refs" | while IFS= read -r backup_ref; do
+    if ! is_codex_backup_image_ref "${backup_ref%%:*}"; then
+      continue
+    fi
+    if [ -n "$image_filter" ] && ! image_ref_matches_filter "$backup_ref" "$image_filter"; then
+      continue
+    fi
+    image_prune_group "$backup_ref"
+  done | sort -u || true)"
+  if [ -n "$backup_bases" ]; then
+    while IFS= read -r backup_base; do
+      [ -z "$backup_base" ] && continue
+      backup_refs="$(printf '%s\n' "$refs" | while IFS= read -r backup_ref; do
+        if ! is_codex_backup_image_ref "${backup_ref%%:*}"; then
+          continue
+        fi
+        if [ "$backup_base" != "$(image_prune_group "$backup_ref")" ]; then
+          continue
+        fi
+        if [ -n "$image_filter" ] && ! image_ref_matches_filter "$backup_ref" "$image_filter"; then
+          continue
+        fi
+        echo "$backup_ref"
+      done | sort -r || true)"
+      if [ -n "$backup_refs" ]; then
+        printf '%s\n' "$backup_refs"
+      fi
+    done <<< "$backup_bases"
+  fi
+}
+
+remove_image_ref() {
+  local image_ref="$1"
+  if "$CONTAINER_CMD" image rm "$image_ref" >/dev/null 2>&1; then
+    return 0
+  fi
+  if "$CONTAINER_CMD" image delete "$image_ref" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+images_list_cmd() {
+  local image=""
+  local backup=0
+  local include_all=0
+  local latest=0
+  local refs=""
+  local filtered_refs=""
+  local ref
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image="$2"; shift 2 ;;
+      --backup) backup=1; shift ;;
+      --all) include_all=1; shift ;;
+      --latest) latest=1; shift ;;
+      --help) usage_images; return 0 ;;
+      *) die "Unknown option for images: $1" ;;
+    esac
+  done
+  if [ -n "$image" ] && ! is_codex_image_filter_name "$image"; then
+    die "Unknown image: $image"
+  fi
+  if [ "$include_all" -eq 1 ] && [ "$latest" -eq 1 ]; then
+    die "Cannot combine --all with --latest"
+  fi
+  require_container
+
+  refs="$(parse_image_list || true)"
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    if [ "$include_all" -eq 0 ] && ! is_codex_image_ref "$ref"; then
+      continue
+    fi
+    if [ -n "$image" ] && ! image_ref_matches_filter "$ref" "$image"; then
+      continue
+    fi
+    if [ "$backup" -eq 1 ] && ! is_codex_backup_image_ref "$ref"; then
+      continue
+    fi
+    filtered_refs="${filtered_refs}${ref}"$'\n'
+  done <<< "$refs"
+  filtered_refs="${filtered_refs%$'\n'}"
+  [ -z "$filtered_refs" ] && return 0
+
+  if [ "$latest" -eq 1 ]; then
+    images_print_latest "$filtered_refs" "$image" "$backup"
+    return 0
+  fi
+  images_print_sorted "$filtered_refs" "$include_all" "$image" "$backup"
+}
+
+images_prune_cmd() {
+  local image=""
+  local keep=1
+  local backup=0
+  local dry_run=0
+  local refs=""
+  local family_refs=""
+  local to_remove=""
+  local kept=0
+  local failures=0
+  local ref=""
+  local family=""
+  local deletion_ref=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image="$2"; shift 2 ;;
+      --keep) keep="$2"; shift 2 ;;
+      --backup) backup=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      --help) usage_images_prune; return 0 ;;
+      *) die "Unknown option for images prune: $1" ;;
+    esac
+  done
+  if ! [[ "$keep" =~ ^[0-9]+$ ]]; then
+    die "--keep must be a non-negative integer: $keep"
+  fi
+  if [ -n "$image" ] && ! is_codex_image_filter_name "$image"; then
+    die "Unknown image: $image"
+  fi
+  require_container
+
+  refs="$(parse_image_list || true)"
+  for family in $(printf '%s\n' "$refs" | while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    if [ -z "$(timestamp_for_image_ref "$ref")" ]; then
+      continue
+    fi
+    if [ "$backup" -eq 1 ] && ! is_codex_backup_image_ref "$ref"; then
+      continue
+    fi
+    if [ -n "$image" ] && ! image_ref_matches_filter "$ref" "$image"; then
+      continue
+    fi
+    image_prune_group "$ref"
+  done | sort -u || true); do
+    [ -z "$family" ] && continue
+    family_refs=""
+    while IFS= read -r ref; do
+      [ -z "$ref" ] && continue
+      if [ "$(image_prune_group "$ref")" != "$family" ]; then
+        continue
+      fi
+      if [ -z "$(timestamp_for_image_ref "$ref")" ]; then
+        continue
+      fi
+      if [ "$backup" -eq 1 ] && ! is_codex_backup_image_ref "$ref"; then
+        continue
+      fi
+      if [ -n "$image" ] && ! image_ref_matches_filter "$ref" "$image"; then
+        continue
+      fi
+      family_refs="${family_refs}${ref}"$'\n'
+    done <<< "$refs"
+    family_refs="${family_refs%$'\n'}"
+    [ -z "$family_refs" ] && continue
+    kept=0
+    while IFS= read -r ref; do
+      if [ "$kept" -lt "$keep" ]; then
+        kept=$((kept + 1))
+        continue
+      fi
+      to_remove="${to_remove}${ref}"$'\n'
+    done <<< "$(printf '%s\n' "$family_refs" | sort -r || true)"
+  done
+
+  to_remove="${to_remove%$'\n'}"
+  [ -z "$to_remove" ] && echo "No images to prune" && return 0
+
+  while IFS= read -r deletion_ref; do
+    [ -z "$deletion_ref" ] && continue
+    if [ "$dry_run" -eq 1 ]; then
+      echo "Would remove image: $deletion_ref"
+      continue
+    fi
+    if remove_image_ref "$deletion_ref"; then
+      echo "Removed image: $deletion_ref"
+    else
+      echo "Failed to remove image: $deletion_ref" >&2
+      failures=$((failures + 1))
+    fi
+  done <<< "$to_remove"
+
+  if [ "$failures" -ne 0 ]; then
+    return 1
+  fi
+
+  return 0
+}
+
+images_cmd() {
+  if [ "$#" -gt 0 ] && [ "${1:0:2}" != "--" ]; then
+    case "$1" in
+      prune) shift; images_prune_cmd "$@" ;;
+      --help|-h) usage_images; return 0 ;;
+      *) die "Unknown images subcommand: $1" ;;
+    esac
+  else
+    images_list_cmd "$@"
+  fi
+}
+
 build_cmd() {
   local image=""
   local rebuild=0
+  local snapshot=0
   local refresh_base=0
   local pull_base=0
   local no_cache=""
+  local build_stamp
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) image="$2"; shift 2 ;;
       --rebuild) rebuild=1; shift ;;
+      --snapshot) snapshot=1; shift ;;
       --refresh-base) refresh_base=1; shift ;;
       --pull-base) pull_base=1; shift ;;
       --help) usage_build; return 0 ;;
@@ -374,6 +898,7 @@ build_cmd() {
   if [ "$rebuild" -eq 1 ]; then
     no_cache="--no-cache"
   fi
+  build_stamp="$(date -u +%Y%m%d-%H%M%S)"
   remove_image() {
     local name="$1"
     if "$CONTAINER_CMD" image rm "$name" >/dev/null 2>&1; then
@@ -424,7 +949,13 @@ build_cmd() {
     local file="$2"
     local file_path="$SCRIPT_DIR/$file"
     local context="$SCRIPT_DIR"
+    local versioned_name="${name}:${build_stamp}"
     if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
+      if [ "$snapshot" -eq 1 ]; then
+        echo "Snapshotting existing image tags: $name, $versioned_name"
+        "$CONTAINER_CMD" image tag "$name" "$versioned_name"
+        return 0
+      fi
       echo "Image already exists: $name (use --rebuild to rebuild)"
       return 0
     fi
@@ -434,11 +965,13 @@ build_cmd() {
     if [ "$pull_base" -eq 1 ]; then
       pull_base_image "$file_path"
     fi
+    echo "Building image tags: $name, $versioned_name"
     if [ -n "$no_cache" ]; then
       "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$no_cache" "$context"
     else
       "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$context"
     fi
+    "$CONTAINER_CMD" image tag "$name" "$versioned_name"
   }
   case "$image" in
     "") build_one codex DockerFile
@@ -1181,6 +1714,7 @@ case "$cmd" in
   su-exec) shift; su_exec_cmd "$@" ;;
   start|stop|restart|rm) shift; simple_name_cmd "$cmd" "$@" ;;
   ls) shift; ls_cmd "$@" ;;
+  images) shift; images_cmd "$@" ;;
   --help|-h|help|"") usage ;;
   *) die "Unknown command: $cmd" ;;
 esac
