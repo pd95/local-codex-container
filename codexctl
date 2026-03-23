@@ -507,12 +507,14 @@ usage_images() {
   cat <<'EOF'
 Usage: codexctl images [options]
        codexctl images prune [options]
+       codexctl images rm [options]
 
 Commands:
   prune        Remove old timestamp-tagged Codex images
+  rm           Remove all refs for one Codex image family or backup image
 
 Options for `images`:
-  --image NAME  One of: codex, codex-python, codex-swift, codex-office, or a backup base (example: codex-upgrade-smoke from codex-upgrade-smoke-backup-20260313123456)
+  --image NAME  Codex image family, custom codex-* image, or a backup base/image
   --backup      Show only backup image refs
   --all         Include non-Codex images
   --latest      Show only stable tags and newest timestamp tag per family
@@ -521,6 +523,11 @@ Options for `images prune`:
   --keep N      Keep the newest N timestamp tags per family (default: 1)
   --image NAME  Limit pruning to one image family, backup base, or exact backup image ref
   --backup      Prune only backup image refs
+  --dry-run     Print images that would be deleted
+
+Options for `images rm`:
+  --image NAME  Remove one image family, custom codex-* image, or backup base/image
+  --backup      Remove only backup image refs
   --dry-run     Print images that would be deleted
 EOF
 }
@@ -533,6 +540,17 @@ Options:
   --keep N      Keep the newest N timestamp tags per family (default: 1)
   --image NAME  Limit pruning to one image family, backup base, or exact backup image ref
   --backup      Prune only backup image refs
+  --dry-run     Print images that would be deleted
+EOF
+}
+
+usage_images_rm() {
+  cat <<'EOF'
+Usage: codexctl images rm [options]
+
+Options:
+  --image NAME  Remove one image family, custom codex-* image, or backup base/image
+  --backup      Remove only backup image refs
   --dry-run     Print images that would be deleted
 EOF
 }
@@ -895,10 +913,72 @@ images_prune_cmd() {
   return 0
 }
 
+images_rm_cmd() {
+  local image=""
+  local backup=0
+  local dry_run=0
+  local refs=""
+  local to_remove=""
+  local failures=0
+  local ref=""
+  local deletion_ref=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image="$2"; shift 2 ;;
+      --backup) backup=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      --help) usage_images_rm; return 0 ;;
+      *) die "Unknown option for images rm: $1" ;;
+    esac
+  done
+  [ -n "$image" ] || die "--image is required for images rm"
+  if ! is_codex_image_filter_name "$image"; then
+    die "Unknown image: $image"
+  fi
+  require_container
+
+  refs="$(parse_image_list || true)"
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    if ! image_ref_matches_filter "$ref" "$image"; then
+      continue
+    fi
+    if [ "$backup" -eq 1 ] && ! is_codex_backup_image_ref "${ref%%:*}"; then
+      continue
+    fi
+    to_remove="${to_remove}${ref}"$'\n'
+  done <<< "$refs"
+
+  to_remove="${to_remove%$'\n'}"
+  [ -z "$to_remove" ] && echo "No images to remove" && return 0
+
+  while IFS= read -r deletion_ref; do
+    [ -z "$deletion_ref" ] && continue
+    if [ "$dry_run" -eq 1 ]; then
+      echo "Would remove image: $deletion_ref"
+      continue
+    fi
+    if remove_image_ref "$deletion_ref"; then
+      echo "Removed image: $deletion_ref"
+    else
+      echo "Failed to remove image: $deletion_ref" >&2
+      failures=$((failures + 1))
+    fi
+  done <<< "$(printf '%s\n' "$to_remove" | sort -r || true)"
+
+  if [ "$failures" -ne 0 ]; then
+    return 1
+  fi
+
+  return 0
+}
+
 images_cmd() {
   if [ "$#" -gt 0 ] && [ "${1:0:2}" != "--" ]; then
     case "$1" in
       prune) shift; images_prune_cmd "$@" ;;
+      rm) shift; images_rm_cmd "$@" ;;
       --help|-h) usage_images; return 0 ;;
       *) die "Unknown images subcommand: $1" ;;
     esac

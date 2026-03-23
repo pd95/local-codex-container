@@ -177,6 +177,15 @@ Expected behavior:
 - `codexctl images` should include `codex-testing-build` and its newest timestamp tag after the build.
 
 ```bash
+# Removing an image family should remove the stable tag and all snapshots
+codexctl images rm --image codex-testing-build --dry-run
+```
+
+Expected behavior:
+
+- The dry-run output should list both `codex-testing-build` and any `codex-testing-build:<timestamp>` refs that exist locally.
+
+```bash
 # Create multiple upgrade backups for the same container to exercise backup-family pruning
 codexctl run --name codex-images-smoke --image codex --workdir testing/codex --cmd true
 codexctl upgrade --name codex-images-smoke

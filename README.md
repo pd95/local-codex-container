@@ -110,6 +110,9 @@ codexctl images
 # Prune old snapshot tags by family while keeping one newest (dry-run)
 codexctl images prune --keep 1 --dry-run
 
+# Remove a custom image family entirely, including its stable tag and snapshots
+codexctl images rm --image codex-custom --dry-run
+
 # Start a shell inside the container
 codexctl run --shell
 
@@ -127,6 +130,7 @@ codexctl run --cmd bash
 - `codexctl upgrade` is the persistent refresh path for an existing named container. It exports the current container to a backup image, preserves `/home/coder/.codex`, recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state.
 - If an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `codexctl upgrade` stops and asks you to re-run with `--overwrite-config`. You can also reset image-owned defaults with `codexctl run --name <container> --reset-config`.
 - After a successful `codexctl upgrade`, the command prints the backup image name. Remove it later with `codexctl images prune --backup --image <backup-image> --keep 0` after you have verified the upgraded container works as expected.
+- Use `codexctl images rm --image <name>` when you want to remove an image family entirely, including the stable tag. This is the cleanup path for temporary custom images such as `codex-custom`.
 - Use `--rebuild`, `--refresh-base`, and `--pull-base` only for occasional refreshes when you want newer Codex or base image content. See the build cache section below for details.
 - `codexctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
 
@@ -252,6 +256,8 @@ Notes:
 - `--snapshot` creates a new timestamp tag for the current stable image without rebuilding it. Use when you want an immutable test reference for the image you already have locally.
 - `--pull-base` pulls the latest base image tag before building. Use when you want to update base images without deleting them first (preferred).
 - `--refresh-base` deletes the base image first, forcing a re-fetch on build. Use when you need a brute-force refresh; this may fail if the base image is still referenced by containers.
+- `codexctl images prune` removes only old timestamp tags. It deliberately keeps the stable image tag.
+- `codexctl images rm --image <name>` removes the whole image family, including the stable tag and all timestamp tags.
 
 ### Network configuration
 
