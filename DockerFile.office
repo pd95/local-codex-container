@@ -48,7 +48,7 @@ Image metadata:
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
-- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`fd\`
+- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`fd\`, \`bwrap\`
 - programming tools: \`node\`, \`npm\`, \`python3\`, \`python\`, \`pip\`
 - office / document generation/analysis: \`pandoc\`, \`tesseract\`, \`qpdf\`, \`ghostscript\`, Poppler utilities such as \`pdftotext\`
 
