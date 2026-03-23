@@ -3,7 +3,7 @@ FROM alpine:latest
 
 # --- Core tooling ---
 RUN apk add --no-cache \
-        bash zsh npm file curl git ripgrep jq util-linux
+        bash zsh npm file curl git ripgrep jq util-linux bubblewrap
 
 # --- Codex CLI ---
 RUN npm install -g @openai/codex \
@@ -41,7 +41,7 @@ Image metadata:
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
-- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`
+- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`bwrap\`
 - programming tools: \`node\`, \`npm\`
 
 Programming environments:

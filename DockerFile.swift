@@ -5,7 +5,7 @@ FROM swift:latest
 RUN DEBIAN_FRONTEND=noninteractive \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        zsh npm file curl ripgrep jq util-linux \
+        zsh npm file curl ripgrep jq util-linux bubblewrap \
         make \
         python-is-python3 \
   && rm -rf /var/lib/apt/lists/*
@@ -81,7 +81,7 @@ Image metadata:
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
-- base tools: \`bash\`, \`zsh\`, \`curl\`, \`file\`, \`jq\`, \`rg\`
+- base tools: \`bash\`, \`zsh\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`bwrap\`
 - programming tools: \`node\`, \`npm\`, \`make\`, \`python\`, \`swift\`, \`swift-format\`, \`swiftly\`, plus the wrapper commands \`format\` and \`lint\`
 
 Programming environments:

@@ -39,7 +39,7 @@ Image metadata:
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
-- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`
+- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`bwrap\`
 - programming tools: \`node\`, \`npm\`, \`python3\`, \`python\`, \`pip\`
 
 Programming environments:
