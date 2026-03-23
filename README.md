@@ -53,7 +53,7 @@ curl -fsS http://192.168.64.1:11434/api/version
 
 That command should return a short JSON object with Ollama's version. If it fails, fix the network path first; otherwise Codex inside the container will fail to reach Ollama.
 
-`codexctl run` also performs a local-mode preflight from inside the container. If the configured Ollama endpoint is unreachable, it checks the container's detected host gateway and prints an actionable error when the config points at the wrong address or Ollama is not exposed on that gateway.
+`codexctl run` performs that local-mode preflight only when starting the default Codex command. If the configured Ollama endpoint is unreachable, it checks the container's detected host gateway and prints an actionable error when the config points at the wrong address or Ollama is not exposed on that gateway. `--cmd` and `--shell` skip this check.
 
 ## Use `codexctl` (recommended)
 
@@ -121,6 +121,7 @@ codexctl run --cmd bash
 
 - Builds create the stable `codex`, `codex-python`, `codex-swift`, and `codex-office` tags and also add immutable UTC snapshot tags such as `codex:20260313-154500`. Use `codexctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `codexctl exec`.
+- In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default. All default images include both `bash` and `zsh`.
 - `codexctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `codexctl build --rebuild` remains the persistent way to refresh image content.
 - `codexctl upgrade` is the persistent refresh path for an existing named container. It exports the current container to a backup image, preserves `/home/coder/.codex`, recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state.

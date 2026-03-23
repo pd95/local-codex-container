@@ -6,7 +6,8 @@ This repository does not include automated tests. Use the image-specific manual 
 
 These are lightweight sanity checks to confirm core tools are present. Run each
 command from its corresponding `testing/<image>` directory so the container only
-mounts that subtree.
+mounts that subtree. These `--cmd` checks should work even when Ollama is not
+running on the host.
 
 ```bash
 codexctl run --image codex --temp --workdir testing/codex --cmd bash -lc 'zsh --version && bash --version && git --version && rg --version && jq --version && codex --version'

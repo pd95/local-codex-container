@@ -1322,9 +1322,7 @@ run_mode() {
       run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
     fi
   else
-    if [ "$shell" -eq 1 ] || [ "${#cmd_override[@]}" -gt 0 ]; then
-      pre_exec="local_model_warn_pre_exec"
-    else
+    if [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ]; then
       pre_exec="local_model_pre_exec"
     fi
   fi
@@ -1332,7 +1330,6 @@ run_mode() {
     case "$pre_exec" in
       openai_pre_exec) pre_exec="openai_update_pre_exec" ;;
       local_model_pre_exec) pre_exec="local_model_update_pre_exec" ;;
-      local_model_warn_pre_exec) pre_exec="local_model_warn_update_pre_exec" ;;
       *) pre_exec="update_codex_pre_exec" ;;
     esac
   fi
@@ -1598,11 +1595,6 @@ local_model_pre_exec() {
   local_model_preflight "$name" strict
 }
 
-local_model_warn_pre_exec() {
-  local name="$1"
-  local_model_preflight "$name" warn
-}
-
 update_codex_pre_exec() {
   local name="$1"
   local cmd='npm install -g @openai/codex --omit=dev --no-fund --no-audit'
@@ -1624,12 +1616,6 @@ local_model_update_pre_exec() {
   local name="$1"
   update_codex_pre_exec "$name"
   local_model_preflight "$name" strict
-}
-
-local_model_warn_update_pre_exec() {
-  local name="$1"
-  update_codex_pre_exec "$name"
-  local_model_preflight "$name" warn
 }
 
 run_cmd() {
