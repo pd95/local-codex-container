@@ -1,6 +1,36 @@
 # Testing
 
-This repository does not include automated tests. Use the image-specific manual checks below.
+This repository includes a small host-side integration test harness for `codexctl`.
+Run these tests on the macOS host where Apple's `container` CLI is installed. Do not
+run them from inside a Codex container.
+
+## Automated host tests
+
+The automated suite exercises the highest-risk container lifecycle flows without any
+extra dependencies:
+
+- `run --temp` removes the container after exit
+- named `run` keeps the container until explicit removal
+- `upgrade --no-backup` preserves user state without creating a backup image
+- default `upgrade` creates a recovery backup image
+- upgrade preflight failures do not remove the original container
+- `run --reset-config` restores image-owned config, model metadata, and `AGENTS.md`
+- `upgrade --overwrite-config` restores image-owned config, model metadata, and `AGENTS.md`
+
+Run the suite from the repository root on the host:
+
+```bash
+bash tests/run-tests.sh
+```
+
+You can point the harness at another `codexctl` binary or container runtime command:
+
+```bash
+CODEXCTL=/path/to/codexctl CONTAINER_CMD=container bash tests/run-tests.sh
+```
+
+Use the image-specific manual checks below when you need broader smoke coverage, interactive
+Codex validation, or image/toolchain verification that is not yet automated.
 
 ## Smoke tests (all images)
 
@@ -45,36 +75,52 @@ codexctl run --image codex-swift --temp --workdir testing/codex-swift --cmd bash
 
 ## Upgrade flow
 
-Use a persistent container so there is state to preserve, then recreate it with `codexctl upgrade`.
+Use a persistent container so there is state to preserve, then recreate it with `codexctl upgrade`. Unless the test is specifically about backup images, prefer `--no-backup` so the manual test does not leave export images behind. Remove each named test container after the check completes.
 
 ```bash
 codexctl run --name codex-upgrade-smoke --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo upgrade-ok >/home/coder/.codex/upgrade-smoke.txt'
-codexctl upgrade --name codex-upgrade-smoke
+codexctl upgrade --name codex-upgrade-smoke --no-backup
 codexctl run --name codex-upgrade-smoke --image codex --workdir testing/codex --cmd bash -lc 'cat /home/coder/.codex/upgrade-smoke.txt'
+codexctl rm --name codex-upgrade-smoke
 ```
 
-Expected output includes `upgrade-ok`, and `codexctl upgrade` should print the backup image name it created via `container export` plus follow-up hints for `codexctl run --name codex-upgrade-smoke --reset-config` and `codexctl images prune --backup --image <backup-image> --keep 0`.
+Expected output includes `upgrade-ok`, and `codexctl upgrade --no-backup` should report that backup export was skipped while still printing the `codexctl run --name codex-upgrade-smoke --reset-config` hint.
 
 For a running-container upgrade, keep the container alive before upgrading:
 
 ```bash
 codexctl run --name codex-upgrade-live --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo live-upgrade-ok >/home/coder/.codex/live-upgrade-smoke.txt'
 codexctl start --name codex-upgrade-live
-codexctl upgrade --name codex-upgrade-live
+codexctl upgrade --name codex-upgrade-live --no-backup
 codexctl exec --name codex-upgrade-live -- cat /home/coder/.codex/live-upgrade-smoke.txt
+codexctl stop --name codex-upgrade-live
+codexctl rm --name codex-upgrade-live
 ```
 
 Expected output includes `live-upgrade-ok`, and the container should still appear in `container ls` after the upgrade.
 
-Mixed-case container names should also upgrade cleanly, with a lowercased backup image reference:
+Mixed-case container names should also upgrade cleanly:
 
 ```bash
 codexctl run --name codex-Upgrade-Smoke --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo mixed-case-ok >/home/coder/.codex/mixed-case.txt'
-codexctl upgrade --name codex-Upgrade-Smoke
+codexctl upgrade --name codex-Upgrade-Smoke --no-backup
 codexctl run --name codex-Upgrade-Smoke --image codex --workdir testing/codex --cmd bash -lc 'cat /home/coder/.codex/mixed-case.txt'
+codexctl rm --name codex-Upgrade-Smoke
 ```
 
-Expected output includes `mixed-case-ok`, and `codexctl upgrade` should print a backup image name similar to `codex-upgrade-smoke-backup-20260313141749`.
+Expected output includes `mixed-case-ok`.
+
+Backup-image creation should still work when `--no-backup` is omitted:
+
+```bash
+codexctl run --name codex-upgrade-backup-smoke --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && echo backup-ok >/home/coder/.codex/backup-smoke.txt'
+codexctl upgrade --name codex-upgrade-backup-smoke
+codexctl run --name codex-upgrade-backup-smoke --image codex --workdir testing/codex --cmd bash -lc 'cat /home/coder/.codex/backup-smoke.txt'
+codexctl rm --name codex-upgrade-backup-smoke
+codexctl images prune --backup --image codex-upgrade-backup-smoke-backup --keep 0
+```
+
+Expected output includes `backup-ok`, and `codexctl upgrade` should print a lowercased backup image name similar to `codex-upgrade-backup-smoke-backup-20260313141749` plus the follow-up cleanup hint.
 
 Upgrade preflight failures should also abort before the original container is removed:
 
@@ -87,6 +133,10 @@ mv /tmp/codex-upgrade-workdir /tmp/codex-upgrade-workdir-moved
 codexctl upgrade --name codex-upgrade-workdir-test
 printf 'x' > /tmp/codex-upgrade-workdir
 codexctl upgrade --name codex-upgrade-workdir-test
+rm -f /tmp/codex-upgrade-workdir
+mv /tmp/codex-upgrade-workdir-moved /tmp/codex-upgrade-workdir
+codexctl rm --name codex-upgrade-workdir-test
+rm -rf /tmp/codex-upgrade-workdir
 ```
 
 Expected output includes:
@@ -99,9 +149,10 @@ AGENTS migration behavior should also be verified:
 
 ```bash
 codexctl run --name codex-upgrade-agents-test --image codex --workdir testing/codex --cmd bash -lc 'rm -f /home/coder/.codex/AGENTS.md && printf "legacy-agents\\n" >/home/coder/.codex/AGENTS.md'
-codexctl upgrade --name codex-upgrade-agents-test
-codexctl upgrade --name codex-upgrade-agents-test --overwrite-config
+codexctl upgrade --name codex-upgrade-agents-test --no-backup
+codexctl upgrade --name codex-upgrade-agents-test --overwrite-config --no-backup
 codexctl run --name codex-upgrade-agents-test --image codex --workdir testing/codex --cmd bash -lc 'test -L /home/coder/.codex/AGENTS.md && readlink /home/coder/.codex/AGENTS.md && grep -q "trust_level = \"trusted\"" /home/coder/.codex/config.toml'
+codexctl rm --name codex-upgrade-agents-test
 ```
 
 Expected output includes:
@@ -125,10 +176,11 @@ Expected output after the reset run should include:
 
 ```bash
 codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'mkdir -p /home/coder/.codex && printf "# PRE-OVERWRITE\n[ollama]\nhost = \"http://127.0.0.1:11434\"\n" > /home/coder/.codex/config.toml && rm -f /home/coder/.codex/local_models.json'
-codexctl upgrade --name codex-upgrade-overwrite-config-test
+codexctl upgrade --name codex-upgrade-overwrite-config-test --no-backup
 codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'cp /etc/codexctl/config.toml /tmp/image-config.toml && cp /home/coder/.codex/config.toml /tmp/container-config.toml && sha256sum /tmp/image-config.toml /tmp/container-config.toml && test ! -f /home/coder/.codex/local_models.json'
-codexctl upgrade --name codex-upgrade-overwrite-config-test --overwrite-config
+codexctl upgrade --name codex-upgrade-overwrite-config-test --overwrite-config --no-backup
 codexctl run --name codex-upgrade-overwrite-config-test --image codex --workdir testing/codex --cmd bash -lc 'cp /etc/codexctl/config.toml /tmp/image-config.toml && cp /home/coder/.codex/config.toml /tmp/container-config.toml && cp /etc/codexctl/local_models.json /tmp/image-models.json && cp /home/coder/.codex/local_models.json /tmp/container-models.json && diff -q /tmp/image-config.toml /tmp/container-config.toml && diff -q /tmp/image-models.json /tmp/container-models.json && grep -q "trust_level = \"trusted\"" /home/coder/.codex/config.toml'
+codexctl rm --name codex-upgrade-overwrite-config-test
 ```
 
 Expected output after the overwrite upgrade should show:
@@ -190,6 +242,7 @@ Expected behavior:
 codexctl run --name codex-images-smoke --image codex --workdir testing/codex --cmd true
 codexctl upgrade --name codex-images-smoke
 codexctl upgrade --name codex-images-smoke
+codexctl rm --name codex-images-smoke
 
 # Upgrade backups should be listed as codexctl-owned refs
 codexctl images --backup
