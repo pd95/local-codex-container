@@ -204,7 +204,7 @@ codexctl upgrade --no-backup  # recreate without exporting a backup image first
 codexctl upgrade --overwrite-config  # reset config.toml and local_models.json from upgraded image and recreate ~/.codex/AGENTS.md symlink
 codexctl images prune --backup --keep 2 --dry-run  # preview backup pruning
 codexctl exec              # shell into running container
-codexctl ls                # list containers
+codexctl ls                # list Codex-managed containers (hides runtime support containers like buildkit)
 codexctl rm                # remove the default container for this directory
 ```
 
@@ -214,6 +214,7 @@ Notes:
 - `--temp` creates a disposable container that is removed after the command exits.
 - `--read-only` mounts the workdir as read-only; codex can use its home directory or `/tmp` for scratch data. But cannot modify the workdir.
 - The mount mode is fixed on first creation for a given container name. To switch between read-only and read-write, remove the container (e.g. `codexctl rm`) or use `--temp`/`--name` to create a fresh one.
+- `codexctl ls` only shows Codex-managed containers whose image name starts with `codex`; it hides runtime support containers such as `buildkit`.
 - `--openai --temp` still injects Keychain auth before running the command.
 - Keychain auth is the source of truth for `--openai`; it is synced into running containers before each run.
 - After a run, if the container refresh time is newer (and present), the updated auth is saved back into Keychain.

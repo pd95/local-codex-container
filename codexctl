@@ -2223,7 +2223,17 @@ simple_name_cmd() {
 
 ls_cmd() {
   require_container
-  "$CONTAINER_CMD" ls -a
+  container_list_all | awk '
+    NR == 1 { print; next }
+    {
+      image = $2
+      sub(/^.*\//, "", image)
+      sub(/[:@].*$/, "", image)
+      if (image ~ /^codex([[:alnum:]_.-]*|$)/) {
+        print
+      }
+    }
+  '
 }
 
 cmd="${1:-}"

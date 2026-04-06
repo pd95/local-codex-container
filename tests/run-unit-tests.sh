@@ -51,11 +51,39 @@ test_run_help_reports_profile_default() {
   assert_contains "--profile NAME  Codex profile to use (default: gpt-oss)"
 }
 
+test_ls_filters_non_codex_containers() {
+  begin_test "ls_cmd hides non-Codex runtime containers"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  container_list_all() {
+    cat <<'EOF'
+ID                               IMAGE                                                OS     ARCH   STATE    ADDR              CPUS  MEMORY   STARTED
+converter                        docker.io/library/debian:latest                      linux  amd64  stopped                    4     1024 MB
+buildkit                         ghcr.io/apple/container-builder-shim/builder:0.11.0  linux  arm64  running  192.168.64.10/24  2     2048 MB  2026-04-06T10:40:58Z
+codex-python                     codex-python:latest                                  linux  arm64  stopped                    4     1024 MB
+codex-local-codex-container      codex:latest                                         linux  arm64  running  192.168.64.12/24  4     1024 MB  2026-04-06T10:59:42Z
+codex-custom                     my-team/codex-custom:latest                          linux  arm64  stopped                    4     1024 MB
+EOF
+  }
+
+  run_capture ls_cmd
+  assert_status 0
+  assert_contains "ID                               IMAGE"
+  assert_contains "codex-python                     codex-python:latest"
+  assert_contains "codex-local-codex-container      codex:latest"
+  assert_contains "codex-custom                     my-team/codex-custom:latest"
+  assert_not_contains "buildkit"
+  assert_not_contains "converter"
+}
+
 main() {
   log "Using codexctl at $CODEXCTL"
 
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
+  test_ls_filters_non_codex_containers
 
   log "PASS: all shell unit tests completed"
 }
