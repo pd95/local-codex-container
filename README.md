@@ -28,8 +28,11 @@ I suppose you do not want to install everything from source (which would be doab
 After installing both tools, open Terminal app and run the following commands:
 
 ```bash
-# Pull gpt-oss:20b model (requires 13 GB on disk!)
+# Pull the default gpt-oss profile model (requires 13 GB on disk!)
 ollama pull gpt-oss:20b
+
+# Optional: pull the Gemma profile model before using --profile gemma
+ollama pull gemma4:26b-a4b-it-q4_K_M
 
 # start the container API server (required for building container images)
 container system start
@@ -92,6 +95,9 @@ codexctl build --snapshot
 # Run Codex for the current directory (persistent by default)
 codexctl run
 
+# Run Codex with the Gemma profile from config.toml
+codexctl run --profile gemma
+
 # Run Codex for a specific directory
 codexctl run --workdir /path/to/project
 
@@ -135,6 +141,7 @@ codexctl run --cmd bash
 #### Quick start notes
 
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `codex:20260313-154500`. By default `codexctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM codex...` dependencies, and builds them in dependency order. Use `codexctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
+- Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `codexctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `codexctl exec`.
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `codexctl` for a static default. All default images include both `bash` and `zsh`.
@@ -167,6 +174,21 @@ When to use which image:
 - `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
 - `DEFAULT_CODEX_PROFILE` (default profile passed to codex in local mode)
 - `DEFAULT_CODEX_CMD` (base codex command/flags used when launching codex)
+
+### Model profiles
+
+Local-model runs use profiles defined in `config.toml`:
+
+- `gpt-oss`: default profile backed by Ollama model `gpt-oss:20b`
+- `gemma`: optional profile backed by Ollama model `gemma4:26b-a4b-it-q4_K_M`
+
+Choose a profile per run with:
+
+```bash
+codexctl run --profile gemma
+```
+
+If you want Gemma to become the default local model, either set `CODEX_PROFILE=gemma` in your shell environment or change `DEFAULT_CODEX_PROFILE` in `codexctl`.
 
 ### Other useful commands
 
