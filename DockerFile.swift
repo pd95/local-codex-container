@@ -1,5 +1,7 @@
 # For Swift Development
 FROM swift:latest
+ARG AGENT_RUNTIME=codex
+ARG AGENT_IMAGE_NAME=agent-swift
 
 # --- Core dev tooling (keep lean, no recommends) ---
 RUN DEBIAN_FRONTEND=noninteractive \
@@ -16,6 +18,20 @@ RUN npm install -g @openai/codex \
     --no-fund \
     --no-audit \
     && npm cache clean --force
+
+COPY --chown=root:root agent-claude.sh /usr/local/bin/agent-claude.sh
+COPY --chown=root:root agent-claude.env /etc/agentctl/agent-claude.env
+RUN case "$AGENT_RUNTIME" in
+  claude)
+    npm install -g @anthropic-ai/claude-code \
+      --omit=dev \
+      --no-fund \
+      --no-audit \
+      && npm cache clean --force
+    cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh
+    cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env
+    ;;
+esac
 
 # --- Wrapper scripts (swift-format is already in swift:latest) ---
 RUN printf '%s\n' \
@@ -68,7 +84,7 @@ RUN mkdir -p /etc/codexctl \
  && cp /home/coder/.codex/config.toml /home/coder/.codex/local_models.json /etc/codexctl/ \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
  && cat > /etc/codexctl/image.md <<EOF
-You are running inside the \`agent-swift\` image.
+You are running inside the \`$AGENT_IMAGE_NAME\` image.
 
 Environment:
 - containerized Ubuntu-based Linux (package manager \`apt-get\`, package tools \`dpkg\`)
@@ -77,7 +93,7 @@ Environment:
 - architecture: check with \`uname -m\` if needed
 
 Image metadata:
-- image: \`agent-swift\`
+- image: \`$AGENT_IMAGE_NAME\`
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:

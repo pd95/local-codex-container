@@ -583,7 +583,7 @@ usage_build() {
 Usage: $CLI_NAME build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
 
 Options:
-  --image NAME  Local image name to build (for example: agent-codex, agent-python, agent-my-team)
+  --image NAME  Local image name to build (for example: agent-codex, agent-python, agent-python-codex, agent-python-claude, agent-my-team)
   --rebuild     Rebuild images even if they already exist (disables build cache only; does not refresh FROM tags)
   --snapshot    Add a fresh UTC timestamp tag for existing images without rebuilding
   --pull-base     Pull the base image before building (preferred way to refresh remote FROM tags)
@@ -593,6 +593,8 @@ Each successful build keeps the stable image name (for example `agent-codex`) an
 also adds an immutable UTC timestamp tag (for example `agent-codex:20260313-154500`).
 Local image names follow this convention:
   agent-codex    -> DockerFile
+  agent-python-codex   -> DockerFile.python --build-arg AGENT_RUNTIME=codex
+  agent-python-claude  -> DockerFile.python --build-arg AGENT_RUNTIME=claude
   agent-<name>   -> DockerFile.<name>
   (legacy aliases: codex and codex-<name> are supported)
 
@@ -1210,8 +1212,48 @@ build_cmd() {
     esac
   }
 
+  is_runtime_image_name() {
+    case "$1" in
+      codex|claude) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+
+  matrix_parts_for_image() {
+    local name="$1"
+    local family
+    local rest
+    local runtime
+    local toolchain
+
+    family="${name%%:*}"
+    if [ "${family#agent-}" = "$family" ]; then
+      return 1
+    fi
+    rest="${family#agent-}"
+    runtime="${rest##*-}"
+    if ! is_runtime_image_name "$runtime"; then
+      return 1
+    fi
+    toolchain="${rest%-*}"
+    if [ -z "$toolchain" ]; then
+      return 1
+    fi
+    if ! local_dockerfile_exists_for_image "agent-${toolchain}"; then
+      return 1
+    fi
+    printf '%s\t%s\n' "$toolchain" "$runtime"
+    return 0
+  }
+
   dockerfile_name_for_image() {
     local name="$1"
+    local matrix_parts
+    matrix_parts="$(matrix_parts_for_image "$name" || true)"
+    if [ -n "$matrix_parts" ]; then
+      echo "DockerFile.${matrix_parts%%$'\t'*}"
+      return 0
+    fi
     case "$name" in
       agent|codex) echo "DockerFile" ;;
       agent-*) echo "DockerFile.${name#agent-}" ;;
@@ -1361,6 +1403,9 @@ build_cmd() {
     local context="$SCRIPT_DIR"
     local versioned_name="${name}:${build_stamp}"
     local base=""
+    local build_args=()
+    local matrix_parts=""
+    local matrix_runtime=""
     file="$(dockerfile_name_for_image "$name")"
     file_path="$SCRIPT_DIR/$file"
     if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
@@ -1387,11 +1432,19 @@ build_cmd() {
         echo "      Use --pull-base (preferred) or --refresh-base to update $base."
       fi
     fi
+
+    matrix_parts="$(matrix_parts_for_image "$name" || true)"
+    if [ -n "$matrix_parts" ]; then
+      matrix_runtime="${matrix_parts#*$'\t'}"
+      build_args+=("--build-arg" "AGENT_RUNTIME=$matrix_runtime")
+    fi
+    build_args+=("--build-arg" "AGENT_IMAGE_NAME=$name")
+
     echo "Building image tags: $name, $versioned_name"
     if [ -n "$no_cache" ]; then
-      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$no_cache" "$context"
+      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "${build_args[@]}" "$no_cache" "$context"
     else
-      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$context"
+      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "${build_args[@]}" "$context"
     fi
     "$CONTAINER_CMD" image tag "$name" "$versioned_name"
     tag_legacy_image_ref_alias "$name"

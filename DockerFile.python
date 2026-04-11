@@ -1,7 +1,11 @@
 # For Python environment
 FROM agent-codex
+ARG AGENT_RUNTIME=codex
+ARG AGENT_IMAGE_NAME=agent-python
 
 USER root
+COPY --chown=root:root agent-claude.sh /usr/local/bin/agent-claude.sh
+COPY --chown=root:root agent-claude.env /etc/agentctl/agent-claude.env
 
 # --- Python runtime & packaging ---
 RUN apk add --no-cache \
@@ -23,10 +27,22 @@ RUN printf '%s\n' \
 ENV PATH="$VIRTUAL_ENV/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+RUN case "$AGENT_RUNTIME" in
+  claude)
+    npm install -g @anthropic-ai/claude-code \
+      --omit=dev \
+      --no-fund \
+      --no-audit \
+      && npm cache clean --force
+    cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh
+    cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env
+    ;;
+esac
+
 RUN mkdir -p /etc/codexctl \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
  && cat > /etc/codexctl/image.md <<EOF
-You are running inside the \`agent-python\` image.
+You are running inside the \`$AGENT_IMAGE_NAME\` image.
 
 Environment:
 - containerized Alpine Linux (package manager \`apk\`)
@@ -35,7 +51,7 @@ Environment:
 - architecture: check with \`uname -m\` if needed
 
 Image metadata:
-- image: \`agent-python\`
+- image: \`$AGENT_IMAGE_NAME\`
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
