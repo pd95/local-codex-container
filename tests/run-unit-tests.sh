@@ -115,6 +115,113 @@ EOF
   container_supports_capability unit-test-container openai-mode || fail "Expected openai-mode capability"
 }
 
+test_container_auth_format_helpers() {
+  begin_test "agent auth metadata helpers support AGENT_AUTH_FORMAT"
+
+  load_codexctl_functions
+
+  local current_format=""
+  container_agent_env_value() {
+    local _name="$1"
+    local key="$2"
+    local fallback="$3"
+    if [ "$key" = "AGENT_AUTH_FORMAT" ] && [ -n "$current_format" ]; then
+      printf '%s\n' "$current_format"
+      return 0
+    fi
+    printf '%s\n' "$fallback"
+  }
+
+  current_format=""
+  [ "$(container_auth_format unit-test-container)" = "json_refresh_token" ] || fail "Expected default auth format fallback"
+  current_format="directory_tarball"
+  [ "$(container_auth_format unit-test-container)" = "directory_tarball" ] || fail "Expected explicit AGENT_AUTH_FORMAT"
+}
+
+test_openai_auth_sync_opaque_format() {
+  begin_test "openai auth sync path uses checksums for opaque auth formats"
+
+  load_codexctl_functions
+
+  local test_auth_format="opaque_blob"
+  local container_payload="token-v1"
+  local keychain_payload="token-v1"
+  local load_calls=0
+  local store_calls=0
+
+  ensure_keychain() { return 0; }
+  auth_signature() {
+    cat | sha256sum | awk '{print $1}'
+  }
+
+  container_agent_env_value() {
+    local key="$2"
+    local fallback="$3"
+    case "$key" in
+      AGENT_AUTH_FORMAT) printf '%s\n' "${test_auth_format}" ;;
+      AGENT_AUTH_PATH) printf '%s\n' "/home/coder/.codex/auth.json" ;;
+      AGENT_KEYCHAIN_SERVICE) printf '%s\n' "${fallback}" ;;
+      AGENT_KEYCHAIN_ACCOUNT) printf '%s\n' "${fallback}" ;;
+      *) printf '%s\n' "$fallback" ;;
+    esac
+  }
+  CONTAINER_CMD=container
+  container() {
+    if [ "$1" != "exec" ]; then
+      fail "Unexpected container invocation: $*"
+    fi
+    shift
+    if [ "$1" = "unit-test-container" ]; then
+      shift
+    fi
+    while [ "$#" -gt 0 ] && [[ "$1" == setpriv* || "$1" == --* ]]; do
+      shift
+    done
+    case "$1" in
+      test)
+        return 0
+        ;;
+      cat)
+        printf '%s' "$container_payload"
+        ;;
+      *)
+        fail "Unexpected container exec payload: $*"
+        ;;
+    esac
+  }
+  keychain_script_run() {
+    local cmd="$3"
+    case "$cmd" in
+      read)
+        printf '%s' "$keychain_payload"
+        ;;
+      load-to-container)
+        load_calls=$((load_calls + 1))
+        ;;
+      store-from-container)
+        store_calls=$((store_calls + 1))
+        ;;
+      verify)
+        return 0
+        ;;
+      *)
+        fail "Unexpected keychain action: $cmd"
+        ;;
+    esac
+  }
+
+  sync_openai_auth_to_container unit-test-container
+  sync_openai_auth_from_container unit-test-container
+  [ "$load_calls" -eq 0 ] || fail "Expected no container load with matching signatures, got: $load_calls"
+  [ "$store_calls" -eq 0 ] || fail "Expected no keychain store with matching signatures, got: $store_calls"
+
+  container_payload="token-v2"
+  sync_openai_auth_to_container unit-test-container
+  sync_openai_auth_from_container unit-test-container
+  [ "$load_calls" -eq 1 ] || fail "Expected one container load after mismatch, got: $load_calls"
+  [ "$store_calls" -eq 1 ] || fail "Expected one keychain store after mismatch, got: $store_calls"
+}
+
 test_codex_auth_wrapper_execs_generic_script() {
   begin_test "codex-auth-keychain wrapper delegates to the generic script"
 
@@ -316,6 +423,8 @@ main() {
   test_run_help_reports_profile_default
   test_agentctl_wrapper_usage_banner
   test_agent_env_metadata_helpers
+  test_container_auth_format_helpers
+  test_openai_auth_sync_opaque_format
   test_codex_auth_wrapper_execs_generic_script
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check

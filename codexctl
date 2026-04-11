@@ -13,6 +13,7 @@ DEFAULT_RUNTIME_SENTINEL="__agentctl_default_runtime__"
 DEFAULT_AGENT_HOME_DIR="/home/coder/.codex"
 DEFAULT_AGENT_CONFIG_DIR="/home/coder/.codex"
 DEFAULT_AGENT_AUTH_PATH="/home/coder/.codex/auth.json"
+DEFAULT_AGENT_AUTH_FORMAT="json_refresh_token"
 DEFAULT_AGENT_DEFAULTS_DIR="/etc/codexctl"
 DEFAULT_AGENT_IMAGE_MD_PATH="/etc/codexctl/image.md"
 DEFAULT_KEYCHAIN_SERVICE="codex-OpenAI-auth"
@@ -1481,9 +1482,33 @@ PY
   python_exec "$script"
 }
 
+auth_signature() {
+  local script
+  script="$(cat <<'PY'
+import hashlib
+import sys
+
+raw = sys.stdin.buffer.read()
+print(hashlib.sha256(raw).hexdigest())
+PY
+)"
+  python_exec "$script"
+}
+
 keychain_auth_info() {
   local name="${1:-}"
-  keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" read | auth_info_from_json
+  local format="${2:-$(container_auth_format "$name")}"
+  case "$format" in
+    json_refresh_token)
+      keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" read | auth_info_from_json
+      ;;
+    opaque_blob|directory_tarball)
+      keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" read | auth_signature
+      ;;
+    *)
+      die "Unsupported AGENT_AUTH_FORMAT: $format"
+      ;;
+  esac
 }
 
 container_has_agent_contract() {
@@ -1602,73 +1627,140 @@ container_auth_path() {
   container_agent_env_value "$name" AGENT_AUTH_PATH "$DEFAULT_AGENT_AUTH_PATH"
 }
 
+container_auth_format() {
+  local name="$1"
+  container_agent_env_value "$name" AGENT_AUTH_FORMAT "$DEFAULT_AGENT_AUTH_FORMAT"
+}
+
 container_auth_info() {
   local name="$1"
+  local format
+  format="$(container_auth_format "$name")"
   local auth_path
   auth_path="$(container_auth_path "$name")"
   if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f "$auth_path"; then
     echo -e "\t"
     return 0
   fi
-  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat "$auth_path" | auth_info_from_json
+  case "$format" in
+    json_refresh_token)
+      "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat "$auth_path" | auth_info_from_json
+      ;;
+    opaque_blob|directory_tarball)
+      "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat "$auth_path" | auth_signature
+      ;;
+    *)
+      die "Unsupported AGENT_AUTH_FORMAT: $format"
+      ;;
+  esac
 }
 
 sync_openai_auth_to_container() {
   local name="$1"
+  local format
+  format="$(container_auth_format "$name")"
   if ! ensure_keychain "$name"; then
     die "Missing OpenAI auth in Keychain. Run: ${CLI_NAME} auth"
   fi
   local keychain_info
   local keychain_token
   local keychain_refresh
-  keychain_info="$(keychain_auth_info "$name")"
-  IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
-  if [ -z "$keychain_token" ]; then
-    die "Keychain auth missing refresh_token. Run: ${CLI_NAME} auth"
-  fi
+  local keychain_signature
   local container_info
   local container_token
   local container_refresh
-  container_info="$(container_auth_info "$name")"
-  IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
-  if [ -z "$container_token" ]; then
-    echo "Refreshing OpenAI auth in $name" >&2
-    keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" load-to-container "$name" "$(container_auth_path "$name")"
-    return 0
-  fi
-  if [ "$container_token" = "$keychain_token" ] && [ "$container_refresh" = "$keychain_refresh" ]; then
-    return 0
-  fi
+  local container_signature
+  case "$format" in
+    json_refresh_token)
+      keychain_info="$(keychain_auth_info "$name" "$format")"
+      IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
+      if [ -z "$keychain_token" ]; then
+        die "Keychain auth missing refresh_token. Run: ${CLI_NAME} auth"
+      fi
+      container_info="$(container_auth_info "$name")"
+      IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
+      if [ -z "$container_token" ]; then
+        echo "Refreshing OpenAI auth in $name" >&2
+        keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" load-to-container "$name" "$(container_auth_path "$name")"
+        return 0
+      fi
+      if [ "$container_token" = "$keychain_token" ] && [ "$container_refresh" = "$keychain_refresh" ]; then
+        return 0
+      fi
+      ;;
+    opaque_blob|directory_tarball)
+      keychain_signature="$(keychain_auth_info "$name" "$format")"
+      if [ -z "$keychain_signature" ]; then
+        die "Keychain auth missing refresh material. Run: ${CLI_NAME} auth"
+      fi
+      container_signature="$(container_auth_info "$name")"
+      if [ "$container_signature" = "$keychain_signature" ]; then
+        return 0
+      fi
+      ;;
+    *)
+      die "Unsupported AGENT_AUTH_FORMAT: $format"
+      ;;
+  esac
   echo "Refreshing OpenAI auth in $name" >&2
   keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" load-to-container "$name" "$(container_auth_path "$name")"
 }
 
 sync_openai_auth_from_container() {
   local name="$1"
+  local format
+  format="$(container_auth_format "$name")"
   local container_info
   local container_token
   local container_refresh
-  container_info="$(container_auth_info "$name")"
-  IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
-  if [ -z "$container_token" ] || [ -z "$container_refresh" ]; then
-    return 0
-  fi
-  if ! ensure_keychain "$name"; then
-    echo "Keychain auth missing; skipping post-run sync from $name" >&2
-    return 0
-  fi
   local keychain_info
   local keychain_token
   local keychain_refresh
-  keychain_info="$(keychain_auth_info "$name")"
-  IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
-  if [ -z "$keychain_token" ]; then
-    echo "Keychain auth missing refresh_token; skipping post-run sync from $name" >&2
-    return 0
-  fi
-  if [ -z "$keychain_refresh" ] || [[ "$container_refresh" < "$keychain_refresh" ]] || [ "$container_refresh" = "$keychain_refresh" ]; then
-    return 0
-  fi
+  local container_signature
+  local keychain_signature
+  case "$format" in
+    json_refresh_token)
+      container_info="$(container_auth_info "$name")"
+      IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
+      if [ -z "$container_token" ] || [ -z "$container_refresh" ]; then
+        return 0
+      fi
+      if ! ensure_keychain "$name"; then
+        echo "Keychain auth missing; skipping post-run sync from $name" >&2
+        return 0
+      fi
+      keychain_info="$(keychain_auth_info "$name" "$format")"
+      IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
+      if [ -z "$keychain_token" ]; then
+        echo "Keychain auth missing refresh_token; skipping post-run sync from $name" >&2
+        return 0
+      fi
+      if [ -z "$keychain_refresh" ] || [[ "$container_refresh" < "$keychain_refresh" ]] || [ "$container_refresh" = "$keychain_refresh" ]; then
+        return 0
+      fi
+      ;;
+    opaque_blob|directory_tarball)
+      container_signature="$(container_auth_info "$name")"
+      if [ -z "$container_signature" ]; then
+        return 0
+      fi
+      if ! ensure_keychain "$name"; then
+        echo "Keychain auth missing; skipping post-run sync from $name" >&2
+        return 0
+      fi
+      keychain_signature="$(keychain_auth_info "$name" "$format")"
+      if [ -z "$keychain_signature" ]; then
+        echo "Keychain auth missing refresh material; skipping post-run sync from $name" >&2
+        return 0
+      fi
+      if [ "$container_signature" = "$keychain_signature" ]; then
+        return 0
+      fi
+      ;;
+    *)
+      die "Unsupported AGENT_AUTH_FORMAT: $format"
+      ;;
+  esac
   echo "Updating Keychain auth from $name" >&2
   keychain_script_run "$(container_agent_keychain_service "$name")" "$(container_agent_keychain_account "$name")" store-from-container "$name" "$(container_auth_path "$name")"
 }
