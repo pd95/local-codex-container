@@ -35,7 +35,7 @@ test_run_profile_wires_selected_profile() {
   default_name() { printf 'unit-test-container\n'; }
   run_container() {
     captured_pre_exec="$9"
-    shift 11
+    shift 12
     captured_cmd="$(printf '%s\n' "$*")"
   }
 

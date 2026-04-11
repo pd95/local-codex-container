@@ -1780,7 +1780,8 @@ run_container() {
   local pre_exec="$9"
   local post_exec="${10}"
   local reset_config="${11}"
-  shift 11
+  local pre_exec_profile="${12:-$DEFAULT_CODEX_PROFILE}"
+  shift 12
   local cmd=("$@")
   local exit_code=0
   local started=0
@@ -1869,7 +1870,7 @@ run_container() {
     overwrite_codex_config "$actual_name"
   fi
   if [ -n "$pre_exec" ]; then
-    "$pre_exec" "$actual_name"
+    "$pre_exec" "$actual_name" "$pre_exec_profile"
   fi
   run_exec
   if [ -n "$post_exec" ]; then
@@ -1938,7 +1939,7 @@ run_mode() {
     shell=0
   fi
 
-  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$workdir" "$pre_exec" "$post_exec" "$reset_config" "${cmd[@]}"
+  run_container "$name" "$image" "$temp" "$shell" "$cpu" "$mem" "$read_only" "$workdir" "$pre_exec" "$post_exec" "$reset_config" "$profile" "${cmd[@]}"
 }
 
 openai_pre_exec() {
@@ -1957,9 +1958,16 @@ openai_post_exec() {
 local_model_preflight_info() {
   local name="$1"
   local profile="$2"
+  local config_dir="$3"
+  local defaults_dir="$4"
+  if [ -z "$defaults_dir" ]; then
+    defaults_dir="$DEFAULT_AGENT_DEFAULTS_DIR"
+  fi
 
-  "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" sh -s -- "$profile" <<'SH'
+  "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" sh -s -- "$profile" "$config_dir" "$defaults_dir" <<'SH'
 profile="${1:-gpt-oss}"
+config_dir="${2:-}"
+defaults_dir="${3:-/etc/codexctl}"
 config_file=""
 provider=""
 base_url=""
@@ -1969,12 +1977,23 @@ gateway=""
 gateway_api_url=""
 gateway_ok=0
 
-for candidate in /home/coder/.codex/config.toml /etc/codexctl/config.toml; do
-  if [ -f "$candidate" ]; then
-    config_file="$candidate"
-    break
-  fi
-done
+if [ -n "$config_dir" ]; then
+  for candidate in "$config_dir/config.toml" "$defaults_dir/config.toml"; do
+    if [ -f "$candidate" ]; then
+      config_file="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "$config_file" ]; then
+  for candidate in /home/coder/.codex/config.toml /etc/codexctl/config.toml; do
+    if [ -f "$candidate" ]; then
+      config_file="$candidate"
+      break
+    fi
+  done
+fi
 
 if [ -n "$config_file" ]; then
   provider="$(awk -v profile="$profile" '
@@ -2084,6 +2103,8 @@ SH
 local_model_preflight() {
   local name="$1"
   local mode="$2"
+  local config_dir="${3:-}"
+  local profile="${4:-$DEFAULT_CODEX_PROFILE}"
   local output
   local config_file=""
   local base_url=""
@@ -2099,7 +2120,7 @@ local_model_preflight() {
   local remediation_host=""
   local remediation=""
 
-  if ! output="$(local_model_preflight_info "$name" "$profile")"; then
+  if ! output="$(local_model_preflight_info "$name" "$profile" "$config_dir")"; then
     message="Unable to run local-model preflight inside container: $name"
     case "$mode" in
       warn) warn "$message"; return 0 ;;
@@ -2144,12 +2165,12 @@ EOF
 
   if [ "$gateway_ok" = "1" ]; then
     if [ -n "$configured_api_url" ]; then
-      message="Local Ollama is reachable from $name at $gateway_api_url, but Codex is configured to use $configured_api_url from ${config_file:-config.toml}.
+      message="Local Ollama is reachable from $name at $gateway_api_url, but the runtime is configured to use $configured_api_url from ${config_file:-config.toml}.
 
-Update ${config_file:-/home/coder/.codex/config.toml} to use http://${gateway}:11434/v1.
+Update ${config_file:-$config_dir/config.toml} to use http://${gateway}:11434/v1.
 See README.md 'Local model connectivity'."
     else
-      message="Local Ollama is reachable from $name at $gateway_api_url, but Codex does not have a usable local base_url in ${config_file:-config.toml}.
+      message="Local Ollama is reachable from $name at $gateway_api_url, but the runtime does not have a usable local base_url in ${config_file:-config.toml}.
 
 Set base_url to http://${gateway}:11434/v1.
 See README.md 'Local model connectivity'."
@@ -2194,10 +2215,11 @@ See README.md 'Local model connectivity'.${remediation}"
 
 local_model_pre_exec() {
   local name="$1"
+  local profile="${2:-$DEFAULT_CODEX_PROFILE}"
   if container_has_agent_contract "$name" && ! container_supports_capability "$name" local-model-mode; then
     die "Selected runtime does not support local model mode"
   fi
-  local_model_preflight "$name" strict
+  local_model_preflight "$name" strict "$(container_agent_config_dir "$name")" "$profile"
 }
 
 update_codex_pre_exec() {
@@ -2229,8 +2251,9 @@ openai_update_pre_exec() {
 
 local_model_update_pre_exec() {
   local name="$1"
+  local profile="${2:-$DEFAULT_CODEX_PROFILE}"
   update_codex_pre_exec "$name"
-  local_model_preflight "$name" strict
+  local_model_preflight "$name" strict "$(container_agent_config_dir "$name")" "$profile"
 }
 
 run_cmd() {
@@ -2419,6 +2442,14 @@ upgrade_cmd() {
   fi
 
   local agents_state=""
+  local config_dir
+  local agents_md_target
+  local config_summary
+  local home_dir
+  config_dir="$(container_agent_config_dir "$name")"
+  agents_md_target="$(container_agent_image_md_path "$name")"
+  home_dir="$(container_agent_home_dir "$name")"
+  config_summary="${config_dir}/AGENTS.md"
   agents_state="$(codex_agents_state "$name")"
   case "$agents_state" in
     symlink|missing) ;;
@@ -2428,9 +2459,9 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config to replace ~/.codex/config.toml and ~/.codex/local_models.json and recreate ~/.codex/AGENTS.md as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
+        die "Container has ${config_summary} as a regular file. Re-run with --overwrite-config to replace ${config_dir}/config.toml and ${config_dir}/local_models.json and recreate ${config_summary} as a symlink to ${agents_md_target}. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
-      echo "Warning: replacing regular ~/.codex/AGENTS.md, ~/.codex/config.toml, and ~/.codex/local_models.json in $name due to --overwrite-config" >&2
+      echo "Warning: replacing regular ${config_summary}, ${config_dir}/config.toml, and ${config_dir}/local_models.json in $name due to --overwrite-config" >&2
       ;;
     other)
       if [ "$overwrite_config" -eq 0 ]; then
@@ -2438,13 +2469,13 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
+        die "Container has ${config_summary} in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to ${agents_md_target}. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
-      echo "Warning: replacing non-standard ~/.codex/AGENTS.md in $name due to --overwrite-config" >&2
+      echo "Warning: replacing non-standard ${config_summary} in $name due to --overwrite-config" >&2
       ;;
   esac
 
-  echo "Backing up /home/coder/.codex from $name" >&2
+  echo "Backing up ${home_dir} from $name" >&2
   backup_codex_config "$name" "$config_backup_file"
 
   if [ "$was_running" -eq 1 ] || [ "$started_for_backup" -eq 1 ]; then
@@ -2485,10 +2516,10 @@ upgrade_cmd() {
   echo "Starting container: $name" >&2
   "$CONTAINER_CMD" start "$name" >/dev/null
 
-  echo "Restoring /home/coder/.codex into $name" >&2
+  echo "Restoring ${home_dir} into $name" >&2
   restore_codex_config "$name" "$config_backup_file"
   if [ "$overwrite_config" -eq 1 ]; then
-    echo "Overwriting config.toml, local_models.json in ~/.codex/ and recreating ~/.codex/AGENTS.md in $name" >&2
+    echo "Overwriting config.toml, local_models.json in ${home_dir} and recreating ${config_summary} in $name" >&2
     overwrite_codex_config "$name"
   fi
 
