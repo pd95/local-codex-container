@@ -2219,7 +2219,7 @@ local_model_pre_exec() {
   local name="$1"
   local profile="${2:-$DEFAULT_CODEX_PROFILE}"
   if container_has_agent_contract "$name" && ! container_supports_capability "$name" local-model-mode; then
-    die "Selected runtime does not support local model mode"
+    return 0
   fi
   local_model_preflight "$name" strict "$(container_agent_config_dir "$name")" "$profile"
 }
@@ -2254,6 +2254,9 @@ openai_update_pre_exec() {
 local_model_update_pre_exec() {
   local name="$1"
   local profile="${2:-$DEFAULT_CODEX_PROFILE}"
+  if container_has_agent_contract "$name" && ! container_supports_capability "$name" local-model-mode; then
+    return 0
+  fi
   update_codex_pre_exec "$name"
   local_model_preflight "$name" strict "$(container_agent_config_dir "$name")" "$profile"
 }
