@@ -1,0 +1,43 @@
+# For Claude Code runtime
+FROM codex
+
+USER root
+
+# --- Claude CLI ---
+RUN npm install -g @anthropic-ai/claude-code \
+    --omit=dev \
+    --no-fund \
+    --no-audit \
+    && npm cache clean --force
+
+RUN mkdir -p /home/coder/.claude
+
+COPY --chown=root:root agent-claude.sh /usr/local/bin/agent.sh
+COPY --chown=root:root agent-claude.env /etc/agentctl/agent.env
+
+RUN chmod 755 /usr/local/bin/agent.sh \
+ && mkdir -p /etc/agentctl/defaults \
+ && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+ && cat > /etc/agentctl/image.md <<EOF
+You are running inside the \`claude\` image.
+
+Environment:
+- containerized Alpine Linux (package manager \`apk\`)
+- running as the non-root user \`coder\`
+- shared host workspace at \`/workdir\`
+- architecture: check with \`uname -m\` if needed
+
+Image metadata:
+- image: \`codex-claude\`
+- built_at_utc: \`${BUILD_TIME}\`
+
+Built-in CLI tools:
+- base tools: \`bash\`, \`zsh\`, \`git\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`bwrap\`
+- programming tools: \`node\`, \`npm\`
+
+Programming environments:
+- Node.js with npm
+EOF
+
+RUN ln -sf /etc/agentctl/image.md /home/coder/.claude/AGENTS.md
+RUN chown -R coder:coder /home/coder/.claude /etc/agentctl/defaults

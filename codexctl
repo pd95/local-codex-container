@@ -1923,7 +1923,9 @@ run_mode() {
     fi
   else
     if [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ]; then
-      pre_exec="local_model_pre_exec"
+      if ! container_has_agent_contract "$name" || container_supports_capability "$name" local-model-mode; then
+        pre_exec="local_model_pre_exec"
+      fi
     fi
   fi
   if [ "$update" -eq 1 ]; then

@@ -45,6 +45,33 @@ test_run_profile_wires_selected_profile() {
   printf '%s\n' "$captured_cmd" | grep -Fxq '__agentctl_default_runtime__ local gemma' || fail "Expected runtime contract command to include local mode and profile gemma, got: $captured_cmd"
 }
 
+test_run_skips_local_model_preflight_for_non_local_runtime() {
+  begin_test "run without --cmd skips local-model preflight when runtime does not support it"
+
+  load_codexctl_functions
+
+  local captured_pre_exec=""
+  local captured_cmd=""
+  local workdir
+
+  workdir="$(new_workdir)"
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_has_agent_contract() { return 0; }
+  container_supports_capability() { return 1; }
+  run_container() {
+    captured_pre_exec="$9"
+    shift 12
+    captured_cmd="$(printf '%s\n' "$*")"
+  }
+
+  run_cmd --name unit-test-container --workdir "$workdir"
+
+  [ -z "$captured_pre_exec" ] || fail "Expected no pre-exec hook for unsupported local-model mode, got: $captured_pre_exec"
+  printf '%s\n' "$captured_cmd" | grep -Fxq '__agentctl_default_runtime__ local gpt-oss' || fail "Expected runtime contract command for default profile, got: $captured_cmd"
+}
+
 test_run_help_reports_profile_default() {
   begin_test "run help reports the actual default profile"
 
@@ -420,6 +447,7 @@ main() {
   log "Using codexctl at $CODEXCTL"
 
   test_run_profile_wires_selected_profile
+  test_run_skips_local_model_preflight_for_non_local_runtime
   test_run_help_reports_profile_default
   test_agentctl_wrapper_usage_banner
   test_agent_env_metadata_helpers
