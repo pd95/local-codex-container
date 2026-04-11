@@ -53,6 +53,14 @@ test_run_help_reports_profile_default() {
   assert_contains "--profile NAME  Codex profile to use (default: gpt-oss)"
 }
 
+test_agentctl_wrapper_usage_banner() {
+  begin_test "agentctl wrapper prints its own command name"
+
+  run_capture "$TEST_ROOT/agentctl" --help
+  assert_status 0
+  assert_contains "Usage: agentctl <command> [options]"
+}
+
 test_agent_env_metadata_helpers() {
   begin_test "agent metadata helpers read values from agent.env"
 
@@ -306,6 +314,7 @@ main() {
 
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
+  test_agentctl_wrapper_usage_banner
   test_agent_env_metadata_helpers
   test_codex_auth_wrapper_execs_generic_script
   test_ls_filters_non_codex_containers

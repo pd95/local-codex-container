@@ -34,6 +34,7 @@ resolve_script_path() {
 
 SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+CLI_NAME="${AGENTCTL_NAME:-$(basename -- "$SCRIPT_PATH")}"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/agent-auth-keychain.sh"
 
 die() {
@@ -439,8 +440,8 @@ sanitize_image_name() {
 }
 
 usage() {
-  cat <<'EOF'
-Usage: codexctl <command> [options]
+  cat <<EOF
+Usage: $CLI_NAME <command> [options]
 
 Commands:
   build      Build Codex images
@@ -456,13 +457,13 @@ Commands:
   ls         List containers
   images     List local Codex images or prune old timestamp tags
 
-Run "codexctl <command> --help" for command-specific options.
+Run "$CLI_NAME <command> --help" for command-specific options.
 EOF
 }
 
 usage_build() {
-  cat <<'EOF'
-Usage: codexctl build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
+  cat <<EOF
+Usage: $CLI_NAME build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
 
 Options:
   --image NAME  Local image name to build (for example: codex, codex-python, codex-my-team)
@@ -477,14 +478,14 @@ Local image names follow this convention:
   codex         -> DockerFile
   codex-<name>  -> DockerFile.<name>
 
-When a local Dockerfile uses FROM another local codex image, codexctl builds the
+When a local Dockerfile uses FROM another local codex image, $CLI_NAME builds the
 dependency chain first.
 EOF
 }
 
 usage_run() {
-  cat <<'EOF'
-Usage: codexctl run [options]
+  cat <<EOF
+Usage: $CLI_NAME run [options]
 
 Options:
   --name NAME     Container name (default: codex-<dir>)
@@ -505,8 +506,8 @@ EOF
 }
 
 usage_upgrade() {
-  cat <<'EOF'
-Usage: codexctl upgrade [options]
+  cat <<EOF
+Usage: $CLI_NAME upgrade [options]
 
 Options:
   --name NAME         Container name (default: codex-<dir>)
@@ -520,8 +521,8 @@ EOF
 }
 
 usage_auth() {
-  cat <<'EOF'
-Usage: codexctl auth [options]
+  cat <<EOF
+Usage: $CLI_NAME auth [options]
 
 Options:
   --name NAME   Auth container name (default: codex-openai-auth-<dir>)
@@ -530,8 +531,8 @@ EOF
 }
 
 usage_exec() {
-  cat <<'EOF'
-Usage: codexctl exec [options] [command...]
+  cat <<EOF
+Usage: $CLI_NAME exec [options] [command...]
 
 Options:
   --name NAME  Container name (default: codex-<dir>)
@@ -541,8 +542,8 @@ EOF
 }
 
 usage_su_exec() {
-  cat <<'EOF'
-Usage: codexctl su-exec [options] [command...]
+  cat <<EOF
+Usage: $CLI_NAME su-exec [options] [command...]
 
 Options:
   --name NAME  Container name (default: codex-<dir>)
@@ -552,16 +553,16 @@ EOF
 }
 
 usage_simple_name() {
-  cat <<'EOF'
-Usage: codexctl <start|stop|restart|rm> [--name NAME]
+  cat <<EOF
+Usage: $CLI_NAME <start|stop|restart|rm> [--name NAME]
 EOF
 }
 
 usage_images() {
-  cat <<'EOF'
-Usage: codexctl images [options]
-       codexctl images prune [options]
-       codexctl images rm [options]
+  cat <<EOF
+Usage: $CLI_NAME images [options]
+       $CLI_NAME images prune [options]
+       $CLI_NAME images rm [options]
 
 Commands:
   prune        Remove old timestamp-tagged Codex images
@@ -587,8 +588,8 @@ EOF
 }
 
 usage_images_prune() {
-  cat <<'EOF'
-Usage: codexctl images prune [options]
+  cat <<EOF
+Usage: $CLI_NAME images prune [options]
 
 Options:
   --keep N      Keep the newest N timestamp tags per family (default: 1)
@@ -599,8 +600,8 @@ EOF
 }
 
 usage_images_rm() {
-  cat <<'EOF'
-Usage: codexctl images rm [options]
+  cat <<EOF
+Usage: $CLI_NAME images rm [options]
 
 Options:
   --image NAME  Remove one image family, custom codex-* image, or backup base/image
@@ -1615,7 +1616,7 @@ container_auth_info() {
 sync_openai_auth_to_container() {
   local name="$1"
   if ! ensure_keychain "$name"; then
-    die "Missing OpenAI auth in Keychain. Run: codexctl auth"
+    die "Missing OpenAI auth in Keychain. Run: ${CLI_NAME} auth"
   fi
   local keychain_info
   local keychain_token
@@ -1623,7 +1624,7 @@ sync_openai_auth_to_container() {
   keychain_info="$(keychain_auth_info "$name")"
   IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
   if [ -z "$keychain_token" ]; then
-    die "Keychain auth missing refresh_token. Run: codexctl auth"
+    die "Keychain auth missing refresh_token. Run: ${CLI_NAME} auth"
   fi
   local container_info
   local container_token
@@ -2205,7 +2206,7 @@ run_cmd() {
     name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
   fi
   if [ "$temp" -eq 0 ] && [ -n "$name" ] && container_exists "$name" && { [ -n "$cpu" ] || [ -n "$mem" ]; }; then
-    die "--cpu and --mem only apply when creating a new container. Use codexctl upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
+    die "--cpu and --mem only apply when creating a new container. Use ${CLI_NAME} upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
   fi
 
   run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" "$profile" ${cmd_override[@]+"${cmd_override[@]}"}
@@ -2332,7 +2333,7 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config to replace ~/.codex/config.toml and ~/.codex/local_models.json and recreate ~/.codex/AGENTS.md as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use codexctl run --name $name --reset-config"
+        die "Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config to replace ~/.codex/config.toml and ~/.codex/local_models.json and recreate ~/.codex/AGENTS.md as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
       echo "Warning: replacing regular ~/.codex/AGENTS.md, ~/.codex/config.toml, and ~/.codex/local_models.json in $name due to --overwrite-config" >&2
       ;;
@@ -2342,7 +2343,7 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use codexctl run --name $name --reset-config"
+        die "Container has ~/.codex/AGENTS.md in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
       echo "Warning: replacing non-standard ~/.codex/AGENTS.md in $name due to --overwrite-config" >&2
       ;;
@@ -2407,9 +2408,9 @@ upgrade_cmd() {
     echo "Upgrade complete: $name (backup skipped)" >&2
   fi
   echo >&2
-  echo "If no valid AGENTS.md configuration already exists, reset it with: codexctl run --name $name --reset-config" >&2
+  echo "If no valid AGENTS.md configuration already exists, reset it with: ${CLI_NAME} run --name $name --reset-config" >&2
   if [ "$no_backup" -eq 0 ]; then
-    echo "If everything works as expected, remove the backup image with: codexctl images prune --backup --image $backup_image --keep 0" >&2
+    echo "If everything works as expected, remove the backup image with: ${CLI_NAME} images prune --backup --image $backup_image --keep 0" >&2
   fi
 }
 
