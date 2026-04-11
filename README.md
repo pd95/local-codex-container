@@ -143,6 +143,7 @@ codexctl run --cmd bash
 #### Quick start notes
 
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `codex:20260313-154500`. By default `codexctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM codex...` dependencies, and builds them in dependency order. Use `codexctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
+- `codex-claude` is based on `FROM codex`, so building/upgrading it will also build or refresh the `codex` image in dependency order when needed.
 - Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `codexctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `codexctl exec`.
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
@@ -166,6 +167,7 @@ When to use which image:
 - `codex-python`: Python-heavy tasks, data wrangling, and libraries not in the base image.
 - `codex-swift`: Swift projects, SwiftPM builds, and Swift tooling.
 - `codex-office`: document-centric workflows (docx/xlsx/pdf parsing, report generation).
+- `codex-claude`: Anthropic Claude Code runtime support.
 
 ### Configuration tweaks
 
@@ -245,6 +247,7 @@ To build the codex container images for later use, I have written four `DockerFi
 - `DockerFile.python` for a Alpine based Python installation (~203 MB, built on top of `codex`)
 - `DockerFile.swift` for an Ubuntu based Swift installation (~1.41 GB)
 - `DockerFile.office` for Alpine + Python + Office tooling (~417 MB, built on top of `codex-python`)
+- `DockerFile.claude` for Claude Code on top of `codex`
 
 The Alpine-based images are layered for incremental builds: `codex` -> `codex-python` -> `codex-office`.
 
@@ -268,9 +271,10 @@ The image-specific `image.md` files describe the intended toolchain focus:
 - `codex`: general shell and Git tooling
 - `codex-python`: Python runtime and the default `/opt/venv`
 - `codex-office`: document, PDF, spreadsheet, and report-generation tooling
+- `codex-claude`: Claude Code runtime
 - `codex-swift`: Swift-on-Linux tooling and related platform constraints
 
-Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-swift`, and `codex-office` from the corresponding `DockerFile` (build the Alpine images in order so the bases exist):
+Use the following `container` commands to build the codex images `codex`, `codex-python`, `codex-office`, `codex-swift`, and `codex-claude` from the corresponding `DockerFile` (build the Alpine images in order so the bases exist):
 
 ```bash
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
@@ -286,6 +290,9 @@ container image tag codex-office "codex-office:${STAMP}"
 
 container build -t codex-swift -f DockerFile.swift .
 container image tag codex-swift "codex-swift:${STAMP}"
+
+container build -t codex-claude -f DockerFile.claude .
+container image tag codex-claude "codex-claude:${STAMP}"
 ```
 
 This keeps the stable image names for normal use and also creates immutable timestamped tags for A/B testing and rollback. `codexctl build` automates that same dependency ordering for both the built-in images and any custom local `DockerFile.<name>` images that follow the naming convention above.
