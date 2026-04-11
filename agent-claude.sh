@@ -11,6 +11,11 @@ case "$cmd" in
   run)
     case "$runtime_mode" in
       openai|local|*)
+        if ! command -v claude >/dev/null 2>&1; then
+          echo "Error: claude binary not available in PATH" >&2
+          exit 127
+        fi
+        echo "Launching Claude Code runtime" >&2
         exec claude
         ;;
     esac
