@@ -247,6 +247,23 @@ test_matrix_runtime_image_helpers() {
   [ "$(image_family_for_runtime agent-python-claude:20260313-154500)" = "codex-python-claude:20260313-154500" ] || fail "Expected matrix runtime resolver to fall back to legacy codex image"
 }
 
+test_base_image_from_file_expands_runtime() {
+  begin_test "base image resolver expands AGENT_RUNTIME in FROM"
+
+  load_codexctl_functions
+
+  local df
+  df="$(mktemp "${TMPDIR:-/tmp}/codexctl-base-from.XXXXXX")"
+  register_dir_cleanup "$df"
+
+  cat >"$df" <<'EOF'
+FROM agent-${AGENT_RUNTIME}
+EOF
+
+  [ "$(base_image_from_file "$df" claude)" = "agent-claude" ] || fail "Expected AGENT_RUNTIME var expansion to claude"
+  [ "$(base_image_from_file "$df")" = "agent-codex" ] || fail "Expected default AGENT_RUNTIME to codex"
+}
+
 test_openai_auth_sync_opaque_format() {
   begin_test "openai auth sync path uses checksums for opaque auth formats"
 
@@ -541,6 +558,7 @@ main() {
   test_container_auth_format_helpers
   test_image_family_aliases_support_legacy_and_tagged_names
   test_matrix_runtime_image_helpers
+  test_base_image_from_file_expands_runtime
   test_openai_auth_sync_opaque_format
   test_codex_auth_wrapper_execs_generic_script
   test_ls_filters_non_codex_containers

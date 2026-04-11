@@ -1306,23 +1306,28 @@ build_cmd() {
   }
 
   base_image_from_file() {
-    awk '
+    local file="$1"
+    local runtime="${2-codex}"
+    awk -v runtime="$runtime" '
       toupper($1) == "FROM" {
         for (i = 2; i <= NF; i++) {
           if ($i ~ /^--/) {
             continue
           }
+          gsub(/\$\{AGENT_RUNTIME\}/, runtime, $i)
+          gsub(/\$AGENT_RUNTIME/, runtime, $i)
           print $i
           exit
         }
       }
-    ' "$1"
+    ' "$file"
   }
 
   refresh_base_image() {
     local file="$1"
+    local runtime="$2"
     local base
-    base="$(base_image_from_file "$file")"
+    base="$(base_image_from_file "$file" "$runtime")"
     if [ -n "$base" ]; then
       if local_dockerfile_exists_for_image "$base"; then
         echo "Skipping base image removal for local image: $base"
@@ -1334,8 +1339,9 @@ build_cmd() {
 
   pull_base_image() {
     local file="$1"
+    local runtime="$2"
     local base
-    base="$(base_image_from_file "$file")"
+    base="$(base_image_from_file "$file" "$runtime")"
     if [ -n "$base" ]; then
       if local_dockerfile_exists_for_image "$base"; then
         echo "Skipping base image pull for local image: $base"
@@ -1362,6 +1368,8 @@ build_cmd() {
     local file_name
     local base
     local base_file
+    local matrix_parts=""
+    local matrix_runtime=""
 
     if list_has_line "$build_seen_lines" "$name"; then
       return 0
@@ -1382,8 +1390,12 @@ build_cmd() {
       die "Unknown image: $name"
     fi
 
+    matrix_parts="$(matrix_parts_for_image "$name" || true)"
+    if [ -n "$matrix_parts" ]; then
+      matrix_runtime="${matrix_parts#*$'\t'}"
+    fi
     build_visiting_lines="${build_visiting_lines}${name}"$'\n'
-    base="$(base_image_from_file "$file_path")"
+    base="$(base_image_from_file "$file_path" "$matrix_runtime")"
     if [ -n "$base" ] && is_local_codex_build_image "$base"; then
       if ! local_dockerfile_exists_for_image "$base"; then
         base_file="$(dockerfile_name_for_image "$base" || true)"
@@ -1404,10 +1416,14 @@ build_cmd() {
     local versioned_name="${name}:${build_stamp}"
     local base=""
     local build_args=()
-    local matrix_parts=""
     local matrix_runtime=""
+    local matrix_parts=""
     file="$(dockerfile_name_for_image "$name")"
     file_path="$SCRIPT_DIR/$file"
+    matrix_parts="$(matrix_parts_for_image "$name" || true)"
+    if [ -n "$matrix_parts" ]; then
+      matrix_runtime="${matrix_parts#*$'\t'}"
+    fi
     if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
       if [ "$snapshot" -eq 1 ]; then
         echo "Snapshotting existing image tags: $name, $versioned_name"
@@ -1420,20 +1436,19 @@ build_cmd() {
       return 0
     fi
     if [ "$refresh_base" -eq 1 ]; then
-      refresh_base_image "$file_path"
+      refresh_base_image "$file_path" "$matrix_runtime"
     fi
     if [ "$pull_base" -eq 1 ]; then
-      pull_base_image "$file_path"
+      pull_base_image "$file_path" "$matrix_runtime"
     fi
     if [ "$rebuild" -eq 1 ] && [ "$pull_base" -eq 0 ] && [ "$refresh_base" -eq 0 ]; then
-      base="$(base_image_from_file "$file_path")"
+      base="$(base_image_from_file "$file_path" "$matrix_runtime")"
       if [ -n "$base" ] && ! local_dockerfile_exists_for_image "$base"; then
         echo "Note: --rebuild disables layer cache but does not refresh remote base image tags."
         echo "      Use --pull-base (preferred) or --refresh-base to update $base."
       fi
     fi
 
-    matrix_parts="$(matrix_parts_for_image "$name" || true)"
     if [ -n "$matrix_parts" ]; then
       matrix_runtime="${matrix_parts#*$'\t'}"
       build_args+=("--build-arg" "AGENT_RUNTIME=$matrix_runtime")

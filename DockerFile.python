@@ -1,11 +1,9 @@
-# For Python environment
-FROM agent-codex
 ARG AGENT_RUNTIME=codex
+# For Python environment
+FROM agent-${AGENT_RUNTIME}
 ARG AGENT_IMAGE_NAME=agent-python
 
 USER root
-COPY --chown=root:root agent-claude.sh /usr/local/bin/agent-claude.sh
-COPY --chown=root:root agent-claude.env /etc/agentctl/agent-claude.env
 
 # --- Python runtime & packaging ---
 RUN apk add --no-cache \
@@ -26,18 +24,6 @@ RUN printf '%s\n' \
 # Ensure venv is the default python/pip for all processes (including Codex runs)
 ENV PATH="$VIRTUAL_ENV/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1
-
-RUN case "$AGENT_RUNTIME" in
-  claude)
-    npm install -g @anthropic-ai/claude-code \
-      --omit=dev \
-      --no-fund \
-      --no-audit \
-      && npm cache clean --force
-    cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh
-    cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env
-    ;;
-esac
 
 RUN mkdir -p /etc/codexctl \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
