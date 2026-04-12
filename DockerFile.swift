@@ -21,16 +21,16 @@ RUN npm install -g @openai/codex \
 
 COPY --chown=root:root agent-claude.sh /usr/local/bin/agent-claude.sh
 COPY --chown=root:root agent-claude.env /etc/agentctl/agent-claude.env
-RUN case "$AGENT_RUNTIME" in
-  claude)
+RUN case "$AGENT_RUNTIME" in \
+  claude) \
     npm install -g @anthropic-ai/claude-code \
       --omit=dev \
       --no-fund \
       --no-audit \
-      && npm cache clean --force
-    cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh
-    cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env
-    ;;
+      && npm cache clean --force \
+      && cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh \
+      && cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env \
+    ;; \
 esac
 
 
@@ -64,7 +64,7 @@ RUN printf '%s\n' \
 # --- Add user ---
 RUN groupadd coder \
  && useradd -m -g coder -d /home/coder -s /bin/bash coder \
- && mkdir -p /home/coder/.codex /workdir \
+ && mkdir -p /home/coder/.codex /home/coder/.claude /workdir \
  && chown -R coder:coder /home/coder /workdir
 
 # Make sure HOME is correct for subsequent RUNs when we switch user
@@ -81,7 +81,7 @@ ENV PATH=/home/coder/.local/bin:$PATH
 RUN mkdir -p /home/coder/.local/bin /home/coder/.swiftly \
  && chown -R coder:coder /home/coder/.local /home/coder/.swiftly
 
-RUN mkdir -p /etc/codexctl \
+RUN mkdir -p /etc/codexctl /etc/agentctl \
  && cp /home/coder/.codex/config.toml /home/coder/.codex/local_models.json /etc/codexctl/ \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
  && cat > /etc/codexctl/image.md <<EOF
@@ -108,7 +108,11 @@ Programming environments:
 
 Assume Linux Swift toolchains and Linux build behavior. Do not assume access to macOS, Xcode, iOS SDKs, or Apple simulator frameworks inside this container.
 EOF
-RUN ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md
+RUN ln -sf /etc/codexctl/image.md /etc/agentctl/image.md \
+ && case "$AGENT_RUNTIME" in \
+      claude) ln -sf /etc/agentctl/image.md /home/coder/.claude/AGENTS.md ;; \
+      *) ln -sf /etc/agentctl/image.md /home/coder/.codex/AGENTS.md ;; \
+    esac
 
 # From here on, run as coder so swiftly writes user-owned files
 USER coder

@@ -1310,7 +1310,7 @@ build_cmd() {
 
   base_image_from_file() {
     local file="$1"
-    local runtime="${2-codex}"
+    local runtime="${2:-codex}"
     awk -v runtime="$runtime" '
       toupper($1) == "FROM" {
         for (i = 2; i <= NF; i++) {
@@ -1592,7 +1592,7 @@ overwrite_codex_config() {
   if ! "$CONTAINER_CMD" exec "$name" sh -lc "test -d '$defaults_dir'"; then
     die "Image does not include $defaults_dir for overwrite in $name"
   fi
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -s -- "$config_dir" "$defaults_dir" "$image_md" <<'SH'
+  "$CONTAINER_CMD" exec -i -u 0 "$name" sh -s -- "$config_dir" "$defaults_dir" "$image_md" <<'SH'
 config_dir="$1"
 defaults_dir="$2"
 image_md="$3"
@@ -1994,31 +1994,28 @@ run_container() {
 
   # Execute command inside the container and preserve the exit code.
   run_exec() {
+    local cmd_status=0
     if [ "$shell" -eq 1 ]; then
-      if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "$DEFAULT_SHELL" "-l"; then
-        exit_code=$?
-      fi
+      "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "$DEFAULT_SHELL" "-l" || cmd_status=$?
+      exit_code=$cmd_status
     else
       if [ "${#cmd[@]}" -gt 0 ] && [ "${cmd[0]}" = "$DEFAULT_RUNTIME_SENTINEL" ]; then
         local runtime_mode="${cmd[1]:-local}"
         local runtime_profile="${cmd[2]:-$DEFAULT_CODEX_PROFILE}"
         if container_has_agent_contract "$actual_name"; then
-          if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" sh -lc "AGENTCTL_RUNTIME_MODE=\$1 CODEX_PROFILE=\$2 exec /usr/local/bin/agent.sh run" sh "$runtime_mode" "$runtime_profile"; then
-            exit_code=$?
-          fi
+          "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" sh -lc "AGENTCTL_RUNTIME_MODE=\$1 CODEX_PROFILE=\$2 exec /usr/local/bin/agent.sh run" sh "$runtime_mode" "$runtime_profile" || cmd_status=$?
+          exit_code=$cmd_status
         else
           local legacy_cmd=("${DEFAULT_CODEX_CMD[@]}" --profile "$runtime_profile" --cd /workdir)
           if [ "$runtime_mode" = "openai" ]; then
             legacy_cmd=("${DEFAULT_CODEX_CMD[@]}" --cd /workdir)
           fi
-          if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "${legacy_cmd[@]}"; then
-            exit_code=$?
-          fi
+          "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "${legacy_cmd[@]}" || cmd_status=$?
+          exit_code=$cmd_status
         fi
       else
-        if ! "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "${cmd[@]}"; then
-          exit_code=$?
-        fi
+        "$CONTAINER_CMD" exec -it "$actual_name" "${SETPRIV_ARGS[@]}" "${cmd[@]}" || cmd_status=$?
+        exit_code=$cmd_status
       fi
     fi
   }

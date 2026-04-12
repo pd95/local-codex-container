@@ -54,7 +54,7 @@ Programming environments:
 Use this image for general shell work, Git operations, repository maintenance, and light scripting.
 EOF
 RUN ln -sf /etc/codexctl/image.md /etc/agentctl/image.md
-RUN ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md
+RUN ln -sf /etc/agentctl/image.md /home/coder/.codex/AGENTS.md
 
 # From here on, run as coder so swiftly writes user-owned files
 USER coder

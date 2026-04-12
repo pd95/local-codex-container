@@ -143,7 +143,7 @@ codexctl run --cmd bash
 #### Quick start notes
 
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `agent-codex:20260313-154500`. By default `codexctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM agent-codex...` dependencies, and builds them in dependency order. Use `codexctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
-- `agent-claude` and `agent-python-claude`, `agent-office-claude` are built as runtime-composed variants selected by codexctl matrix image names (`agent-<toolchain>-<runtime>`).
+- `agent-claude` remains a standalone Dockerfile. Matrix variants such as `agent-python-claude`, `agent-office-claude`, and `agent-swift-claude` are available when you build them explicitly with `codexctl build --image agent-<toolchain>-<runtime>`.
 - Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `codexctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `codexctl exec`.
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.

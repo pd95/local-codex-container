@@ -234,6 +234,25 @@ test_matrix_runtime_image_helpers() {
   [ "$(image_family_for_runtime agent-python-claude:20260313-154500)" = "codex-python-claude:20260313-154500" ] || fail "Expected matrix runtime resolver to fall back to legacy codex image"
 }
 
+test_matrix_dockerfiles_publish_runtime_metadata() {
+  begin_test "matrix dockerfiles publish agentctl metadata and runtime-specific AGENTS paths"
+
+  grep -Fq 'ln -sf /etc/codexctl/image.md /etc/agentctl/image.md' "$TEST_ROOT/DockerFile.python" \
+    || fail "Expected DockerFile.python to publish /etc/agentctl/image.md"
+  grep -Fq 'claude) ln -sf /etc/agentctl/image.md /home/coder/.claude/AGENTS.md ;;' "$TEST_ROOT/DockerFile.python" \
+    || fail "Expected DockerFile.python to link Claude AGENTS.md into /home/coder/.claude"
+
+  grep -Fq 'ln -sf /etc/codexctl/image.md /etc/agentctl/image.md' "$TEST_ROOT/DockerFile.office" \
+    || fail "Expected DockerFile.office to publish /etc/agentctl/image.md"
+  grep -Fq 'claude) ln -sf /etc/agentctl/image.md /home/coder/.claude/AGENTS.md ;;' "$TEST_ROOT/DockerFile.office" \
+    || fail "Expected DockerFile.office to link Claude AGENTS.md into /home/coder/.claude"
+
+  grep -Fq 'ln -sf /etc/codexctl/image.md /etc/agentctl/image.md' "$TEST_ROOT/DockerFile.swift" \
+    || fail "Expected DockerFile.swift to publish /etc/agentctl/image.md"
+  grep -Fq 'claude) ln -sf /etc/agentctl/image.md /home/coder/.claude/AGENTS.md ;;' "$TEST_ROOT/DockerFile.swift" \
+    || fail "Expected DockerFile.swift to link Claude AGENTS.md into /home/coder/.claude"
+}
+
 test_openai_auth_sync_opaque_format() {
   begin_test "openai auth sync path uses checksums for opaque auth formats"
 
@@ -528,6 +547,7 @@ main() {
   test_container_auth_format_helpers
   test_image_family_aliases_support_legacy_and_tagged_names
   test_matrix_runtime_image_helpers
+  test_matrix_dockerfiles_publish_runtime_metadata
   test_openai_auth_sync_opaque_format
   test_codex_auth_wrapper_execs_generic_script
   test_ls_filters_non_codex_containers
