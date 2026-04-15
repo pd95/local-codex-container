@@ -60,6 +60,37 @@ test_build_rebuild_stops_buildkit() {
   fi
 }
 
+test_claude_runtime_contract_smoke() {
+  begin_test "agent-claude exposes the Claude runtime contract in a real container"
+  local name
+  local workdir
+
+  name="$(unique_name claude-smoke)"
+  workdir="$(new_workdir)"
+
+  run_capture "$CODEXCTL" build --image agent-claude
+  assert_status 0
+
+  run_capture "$CODEXCTL" run --name "$name" --image agent-claude --temp --workdir "$workdir" --cmd bash -lc '
+    command -v claude >/dev/null &&
+    [ "$(/usr/local/bin/agent.sh home-dir)" = "/home/coder/.claude" ] &&
+    [ "$(/usr/local/bin/agent.sh config-dir)" = "/home/coder/.claude" ] &&
+    [ "$(/usr/local/bin/agent.sh auth-path)" = "/home/coder/.claude/auth.json" ] &&
+    [ "$(/usr/local/bin/agent.sh supports openai-mode)" = "0" ] &&
+    grep -Fxq "AGENT_ID=claude" /etc/agentctl/agent.env &&
+    grep -Fxq "AGENT_HOME_DIR=/home/coder/.claude" /etc/agentctl/agent.env &&
+    test -L /home/coder/.claude/AGENTS.md &&
+    [ "$(readlink /home/coder/.claude/AGENTS.md)" = "/etc/agentctl/image.md" ] &&
+    echo claude-runtime-ok
+  '
+  assert_status 0
+  assert_contains "claude-runtime-ok"
+
+  if container_exists "$name"; then
+    fail "Temporary Claude container still exists: $name"
+  fi
+}
+
 test_upgrade_no_backup_preserves_state() {
   begin_test "upgrade --no-backup preserves state without creating backup images"
   local name
@@ -190,8 +221,6 @@ main() {
   local run_mode="${1:-}"
   if [ "$run_mode" = "unit" ]; then
     shift
-  elif [ -n "$run_mode" ]; then
-    shift
   fi
 
   while [ "$#" -gt 0 ]; do
@@ -223,6 +252,7 @@ main() {
     "test_temp_run_removes_container|run --temp removes the named container"
     "test_named_run_persists_until_rm|named run persists until explicit removal"
     "test_build_rebuild_stops_buildkit|build --rebuild stops buildkit after a successful build"
+    "test_claude_runtime_contract_smoke|agent-claude exposes the Claude runtime contract in a real container"
     "test_upgrade_no_backup_preserves_state|upgrade --no-backup preserves state without creating backup images"
     "test_upgrade_with_backup_creates_recovery_image|upgrade creates a backup image by default"
     "test_upgrade_preflight_failure_keeps_container|upgrade preflight failure leaves the original container intact"
