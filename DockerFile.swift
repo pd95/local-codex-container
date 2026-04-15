@@ -21,6 +21,8 @@ RUN npm install -g @openai/codex \
 
 COPY --chown=root:root agent-claude.sh /usr/local/bin/agent-claude.sh
 COPY --chown=root:root agent-claude.env /etc/agentctl/agent-claude.env
+COPY --chown=root:root agent-codex.sh /usr/local/bin/agent-codex.sh
+COPY --chown=root:root agent-codex.env /etc/agentctl/agent-codex.env
 RUN case "$AGENT_RUNTIME" in \
   claude) \
     npm install -g @anthropic-ai/claude-code \
@@ -30,6 +32,10 @@ RUN case "$AGENT_RUNTIME" in \
       && npm cache clean --force \
       && cp /usr/local/bin/agent-claude.sh /usr/local/bin/agent.sh \
       && cp /etc/agentctl/agent-claude.env /etc/agentctl/agent.env \
+    ;; \
+  *) \
+      cp /usr/local/bin/agent-codex.sh /usr/local/bin/agent.sh \
+      && cp /etc/agentctl/agent-codex.env /etc/agentctl/agent.env \
     ;; \
 esac
 

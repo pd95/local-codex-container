@@ -23,8 +23,8 @@ ENV HOME=/home/coder
 
 # Copy Codex default configuration and local model metadata config
 COPY --chown=coder:coder config.toml local_models.json /home/coder/.codex/
-COPY --chown=root:root agent.sh /usr/local/bin/agent.sh
-COPY --chown=root:root agent.env /etc/agentctl/agent.env
+COPY --chown=root:root agent-codex.sh /usr/local/bin/agent.sh
+COPY --chown=root:root agent-codex.env /etc/agentctl/agent.env
 
 RUN chmod 755 /usr/local/bin/agent.sh \
  && mkdir -p /etc/codexctl /etc/agentctl/defaults \
