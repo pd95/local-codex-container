@@ -171,6 +171,59 @@ When to use which image:
 - `agent-python-codex` / `agent-python-claude`, `agent-office-codex` / `agent-office-claude`, `agent-swift-codex` / `agent-swift-claude`: runtime-by-toolchain combinations.
 - Legacy aliases `codex`, `codex-python`, `codex-office`, and `codex-claude` remain available.
 
+### Claude image matrix
+
+Claude support is image-based in this branch. You do not switch an existing image from Codex to Claude with a `codexctl run` flag; instead, you choose or build an image whose runtime is already `claude`.
+
+The two axes are:
+
+- toolchain: `codex`, `python`, `office`, `swift`
+- runtime: `codex`, `claude`
+
+That produces these image families:
+
+- `agent-codex`, `agent-claude`
+- `agent-python-codex`, `agent-python-claude`
+- `agent-office-codex`, `agent-office-claude`
+- `agent-swift-codex`, `agent-swift-claude`
+
+In practice, the plain toolchain names default to the Codex runtime:
+
+- `agent-python` is the same family as the default Python-on-Codex build
+- `agent-office` is the default Office-on-Codex build
+- `agent-swift` is the default Swift-on-Codex build
+
+Build the Claude variants explicitly when you need Claude plus a toolchain:
+
+```bash
+codexctl build --image agent-claude
+codexctl build --image agent-python-claude
+codexctl build --image agent-office-claude
+codexctl build --image agent-swift-claude
+```
+
+Then run the exact image you want:
+
+```bash
+codexctl run --image agent-claude
+codexctl run --image agent-python-claude
+codexctl run --image agent-office-claude
+codexctl run --image agent-swift-claude
+```
+
+Choose them like this:
+
+- `agent-claude`: Claude Code without extra language or document tooling
+- `agent-python-claude`: Claude Code plus Python and the default `/opt/venv`
+- `agent-office-claude`: Claude Code plus document, spreadsheet, PDF, OCR, and report-generation tooling
+- `agent-swift-claude`: Claude Code plus Swift and SwiftPM tooling
+
+Notes:
+
+- `--profile` applies to Codex local-model runs. It does not select Claude.
+- `--openai` is likewise a Codex/OpenAI flow and is not how Claude is enabled.
+- The matrix builds are derived from the Dockerfiles. For example, `codexctl build --image agent-python-claude` maps to `DockerFile.python` with `AGENT_RUNTIME=claude`.
+
 ### Configuration tweaks
 
 `codexctl` exposes a few top-level constants (in `codexctl`) that you can edit to adjust default behavior:
