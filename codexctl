@@ -2602,8 +2602,15 @@ run_pre_exec() {
     run_agent_sh_in_container "$name" preferred set "$RUN_SELECTED_RUNTIME"
   fi
 
-  if [ "$RUN_SYNC_SELECTED_RUNTIME_AUTH" -eq 1 ] && [ -n "$RUN_SELECTED_RUNTIME" ]; then
-    sync_runtime_auth_to_container_if_available "$name" "$RUN_SELECTED_RUNTIME"
+  if [ "$RUN_SYNC_SELECTED_RUNTIME_AUTH" -eq 1 ] || [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ]; then
+    effective_runtime="$RUN_SELECTED_RUNTIME"
+    if [ -z "$effective_runtime" ]; then
+      effective_runtime="$(run_agent_sh_in_container "$name" preferred get 2>/dev/null || true)"
+    fi
+  fi
+
+  if [ "$RUN_SYNC_SELECTED_RUNTIME_AUTH" -eq 1 ] && [ -n "$effective_runtime" ]; then
+    sync_runtime_auth_to_container_if_available "$name" "$effective_runtime"
   fi
 
   if [ "$RUN_SYNC_OPENAI" -eq 1 ]; then
@@ -2611,10 +2618,6 @@ run_pre_exec() {
   fi
 
   if [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ]; then
-    effective_runtime="$RUN_SELECTED_RUNTIME"
-    if [ -z "$effective_runtime" ]; then
-      effective_runtime="$(run_agent_sh_in_container "$name" preferred get 2>/dev/null || true)"
-    fi
     if [ -z "$effective_runtime" ] || [ "$effective_runtime" = "codex" ]; then
       local_model_preflight "$name" strict
     fi
@@ -2987,7 +2990,8 @@ run_cmd() {
     RUN_SYNC_OPENAI=1
   elif [ -n "$runtime" ]; then
     RUN_SYNC_SELECTED_RUNTIME_AUTH=1
-  elif [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ] && { [ -z "$runtime" ] || [ "$runtime" = "codex" ]; }; then
+  elif [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ]; then
+    RUN_SYNC_SELECTED_RUNTIME_AUTH=1
     RUN_LOCAL_MODEL_PREFLIGHT=1
   fi
   if [ "$update" -eq 1 ]; then
