@@ -1159,7 +1159,9 @@ test_refresh_container_file_streams_source_via_stdin() {
       exec)
         shift
         exec_log="${exec_log}$(printf '%s\n' "$*")"
-        cat >/dev/null || true
+        if [ "${1:-}" = "-i" ]; then
+          cat >/dev/null || true
+        fi
         ;;
       *)
         fail "Unexpected container invocation: $*"
