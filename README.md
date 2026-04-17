@@ -222,6 +222,34 @@ When to use which image:
 `agent-office` remains available only as a legacy compatibility image for older
 document-centric setups. It is no longer part of the primary image strategy.
 
+#### Curated Images vs Bootstrap
+
+Use curated images when you want the simplest supported path:
+
+- `agent-plain`, `agent-python`, and `agent-swift` are the easiest way to start
+- they already contain the expected base tooling, `coder` user, and managed control surface
+- they remain the recommended default for most users
+
+Use `agentctl bootstrap` when you already have, or specifically want, a non-agentctl base container:
+
+- bootstrap is the extensibility path for bringing the current `agentctl` control surface onto a compatible container
+- the current supported families are Alpine (`apk`) and Debian/Ubuntu (`apt-get`)
+- bootstrap can either:
+  - convert an existing compatible container in place
+  - create and bootstrap a new compatible container when you pass `--image`
+
+Examples:
+
+```bash
+# Existing compatible container
+agentctl bootstrap --name existing-devbox
+
+# Create and bootstrap a fresh compatible container from a base image
+agentctl bootstrap --name my-alpine-devbox --image docker.io/library/alpine:latest
+```
+
+If you do not already have a reason to start from a custom base image, prefer the curated images.
+
 ### Configuration tweaks
 
 `agentctl` exposes a few top-level constants (in `agentctl`) that you can edit to adjust default behavior:
