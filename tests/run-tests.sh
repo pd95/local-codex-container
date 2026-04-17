@@ -9,10 +9,11 @@ trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
-Usage: ./tests/run-tests.sh [--filter TEXT] [--from TEXT]
+Usage: ./tests/run-tests.sh [--tier smoke|full] [--filter TEXT] [--from TEXT]
        ./tests/run-tests.sh [TEXT]
 
 Options:
+  --tier TEXT    Run the smoke suite (default) or the full suite
   --filter TEXT  Run only tests whose function name or description contains TEXT
   --from TEXT    Run all tests starting at the first test whose function name or description contains TEXT
 
@@ -22,6 +23,11 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --tier)
+      TEST_TIER="${2:-}"
+      [ -n "$TEST_TIER" ] || fail "Missing value for --tier"
+      shift 2
+      ;;
     --filter)
       TEST_FILTER="${2:-}"
       [ -n "$TEST_FILTER" ] || fail "Missing value for --filter"
@@ -303,6 +309,7 @@ main() {
   log "Using agentctl at $AGENTCTL"
   log "Using codexctl implementation at $CODEXCTL"
   log "Using container runtime command $CONTAINER_CMD"
+  log "Running host test tier: $TEST_TIER"
   if [ -n "$TEST_FILTER" ]; then
     log "Filtering host tests by: $TEST_FILTER"
   fi
@@ -310,16 +317,16 @@ main() {
     log "Running host tests from: $TEST_START_FROM"
   fi
 
-  run_selected_test test_temp_run_removes_container "run --temp removes the named container"
-  run_selected_test test_named_run_persists_until_rm "named run persists until explicit removal"
-  run_selected_test test_build_rebuild_stops_buildkit "build --rebuild stops buildkit after a successful build"
-  run_selected_test test_upgrade_no_backup_preserves_state "upgrade --no-backup preserves state without creating backup images"
-  run_selected_test test_upgrade_with_backup_creates_recovery_image "upgrade creates a backup image by default"
-  run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact"
-  run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink"
-  run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink"
-  run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container"
-  run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container"
+  run_selected_test test_temp_run_removes_container "run --temp removes the named container" smoke
+  run_selected_test test_named_run_persists_until_rm "named run persists until explicit removal" smoke
+  run_selected_test test_build_rebuild_stops_buildkit "build --rebuild stops buildkit after a successful build" full
+  run_selected_test test_upgrade_no_backup_preserves_state "upgrade --no-backup preserves state without creating backup images" full
+  run_selected_test test_upgrade_with_backup_creates_recovery_image "upgrade creates a backup image by default" full
+  run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact" full
+  run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink" smoke
+  run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink" full
+  run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container" smoke
+  run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
   assert_selected_tests_ran
 
   log "PASS: all host integration tests completed"

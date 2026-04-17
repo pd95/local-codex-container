@@ -7,6 +7,7 @@ CODEXCTL="${CODEXCTL:-$TEST_ROOT/codexctl}"
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 TEST_FILTER="${TEST_FILTER:-}"
 TEST_START_FROM="${TEST_START_FROM:-}"
+TEST_TIER="${TEST_TIER:-smoke}"
 TEST_START_ACTIVE=0
 TESTS_RUN=0
 
@@ -206,12 +207,27 @@ test_matches_start_from() {
 run_selected_test() {
   local name="$1"
   local description="$2"
+  local tier="${3:-smoke}"
+  local start_seconds
+  local elapsed_seconds
 
   test_matches_start_from "$name" "$description" || return 0
   test_matches_filter "$name" "$description" || return 0
+  case "$TEST_TIER" in
+    full) ;;
+    smoke)
+      [ "$tier" = "smoke" ] || return 0
+      ;;
+    *)
+      fail "Unknown test tier: $TEST_TIER"
+      ;;
+  esac
 
   TESTS_RUN=$((TESTS_RUN + 1))
+  start_seconds=$SECONDS
   "$name"
+  elapsed_seconds=$((SECONDS - start_seconds))
+  log "Completed in ${elapsed_seconds}s: $description"
 }
 
 assert_selected_tests_ran() {
