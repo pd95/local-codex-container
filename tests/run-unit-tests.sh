@@ -338,6 +338,92 @@ test_write_auth_blob_to_container_uses_agent_sh_auth_write() {
   grep -Fq '/usr/local/bin/agent.sh auth write codex json_refresh_token' "$exec_log_file" || fail "Expected auth write via agent.sh"
 }
 
+test_sync_runtime_auth_to_container_uses_runtime_parameters() {
+  begin_test "sync_runtime_auth_to_container uses runtime-specific auth parameters"
+
+  load_codexctl_functions
+
+  local observed_runtime=""
+  local observed_format=""
+  local observed_missing_message=""
+  local written_payload=""
+
+  ensure_keychain() {
+    observed_runtime="$1"
+    observed_format="$2"
+    return 0
+  }
+  keychain_auth_info() {
+    printf 'unit-token\t2026-04-17T00:00:00Z\n'
+  }
+  keychain_auth_blob() {
+    printf '{"refresh_token":"unit-token","last_refresh":"2026-04-17T00:00:00Z"}'
+  }
+  container_auth_info() {
+    printf '\t\n'
+  }
+  write_auth_blob_to_container() {
+    local name="$1" payload="$2" runtime="$3" auth_format="$4"
+    observed_runtime="$runtime"
+    observed_format="$auth_format"
+    written_payload="$payload"
+    [ "$name" = "unit-test-container" ] || fail "Unexpected container name: $name"
+  }
+
+  run_capture sync_runtime_auth_to_container unit-test-container codex json_refresh_token "missing auth"
+  assert_status 0
+  [ "$observed_runtime" = "codex" ] || fail "Expected runtime codex, got: $observed_runtime"
+  [ "$observed_format" = "json_refresh_token" ] || fail "Expected auth format json_refresh_token, got: $observed_format"
+  printf '%s' "$written_payload" | jq -er '.refresh_token == "unit-token"' >/dev/null || fail "Expected runtime auth payload to be written"
+}
+
+test_sync_runtime_auth_from_container_uses_runtime_parameters() {
+  begin_test "sync_runtime_auth_from_container uses runtime-specific auth parameters"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local observed_runtime=""
+  local observed_format=""
+  local written_blob_file=""
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-sync-from.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  written_blob_file="$temp_dir/written-auth.json"
+
+  container_auth_info() {
+    printf 'unit-token\t2026-04-17T02:00:00Z\n'
+  }
+  ensure_keychain() {
+    observed_runtime="$1"
+    observed_format="$2"
+    return 0
+  }
+  keychain_auth_info() {
+    printf 'unit-token\t2026-04-17T01:00:00Z\n'
+  }
+  container_auth_blob() {
+    local name="$1" runtime="$2" auth_format="$3"
+    observed_runtime="$runtime"
+    observed_format="$auth_format"
+    [ "$name" = "unit-test-container" ] || fail "Unexpected container name: $name"
+    printf '{"refresh_token":"unit-token","last_refresh":"2026-04-17T02:00:00Z"}'
+  }
+  write_keychain_auth_blob() {
+    local runtime="$1" auth_format="$2"
+    observed_runtime="$runtime"
+    observed_format="$auth_format"
+    cat >"$written_blob_file"
+  }
+
+  run_capture sync_runtime_auth_from_container unit-test-container codex json_refresh_token
+  assert_status 0
+  [ "$observed_runtime" = "codex" ] || fail "Expected runtime codex, got: $observed_runtime"
+  [ "$observed_format" = "json_refresh_token" ] || fail "Expected auth format json_refresh_token, got: $observed_format"
+  [ -f "$written_blob_file" ] || fail "Expected container auth blob to be written back to keychain"
+  jq -er '.last_refresh == "2026-04-17T02:00:00Z"' "$written_blob_file" >/dev/null || fail "Expected container auth blob to be written back to keychain"
+}
+
 test_run_auth_flow_uses_agent_sh_auth_contract() {
   begin_test "run_auth_flow uses agent.sh auth login and auth read"
 
@@ -1139,6 +1225,8 @@ main() {
   test_agent_sh_auth_write_rejects_invalid_codex_auth
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write
+  test_sync_runtime_auth_to_container_uses_runtime_parameters
+  test_sync_runtime_auth_from_container_uses_runtime_parameters
   test_run_auth_flow_uses_agent_sh_auth_contract
   test_run_auth_flow_skips_keychain_write_when_auth_unchanged
   test_run_auth_flow_rejects_runtime_without_host_auth_support

@@ -1621,7 +1621,9 @@ write_keychain_auth_blob() {
 
 container_auth_blob() {
   local name="$1"
-  if ! run_agent_sh_in_container "$name" auth read "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"; then
+  local runtime="${2:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${3:-$OPENAI_AUTH_FORMAT}"
+  if ! run_agent_sh_in_container "$name" auth read "$runtime" "$auth_format"; then
     return 0
   fi
 }
@@ -1629,6 +1631,8 @@ container_auth_blob() {
 write_auth_blob_to_container() {
   local name="$1"
   local payload="$2"
+  local runtime="${3:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${4:-$OPENAI_AUTH_FORMAT}"
   local was_running=0
   local started_for_command=0
 
@@ -1643,7 +1647,7 @@ write_auth_blob_to_container() {
     started_for_command=1
   fi
 
-  printf '%s' "$payload" | "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh auth write "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"
+  printf '%s' "$payload" | "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh auth write "$runtime" "$auth_format"
 
   if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null
@@ -1652,8 +1656,10 @@ write_auth_blob_to_container() {
 
 container_auth_info() {
   local name="$1"
+  local runtime="${2:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${3:-$OPENAI_AUTH_FORMAT}"
   local blob
-  blob="$(container_auth_blob "$name")"
+  blob="$(container_auth_blob "$name" "$runtime" "$auth_format")"
   if [ -z "$blob" ]; then
     echo -e "\t"
     return 0
@@ -1661,54 +1667,59 @@ container_auth_info() {
   printf '%s' "$blob" | auth_info_from_json
 }
 
-sync_openai_auth_to_container() {
+sync_runtime_auth_to_container() {
   local name="$1"
-  if ! ensure_keychain "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"; then
-    die "Missing OpenAI auth in Keychain. Run: ${CLI_NAME} auth"
+  local runtime="${2:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${3:-$OPENAI_AUTH_FORMAT}"
+  local missing_message="${4:-Missing runtime auth in Keychain. Run: ${CLI_NAME} auth --runtime $runtime}"
+  if ! ensure_keychain "$runtime" "$auth_format"; then
+    die "$missing_message"
   fi
   local keychain_info
   local keychain_token
   local keychain_refresh
-  keychain_info="$(keychain_auth_info "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT")"
+  keychain_info="$(keychain_auth_info "$runtime" "$auth_format")"
   IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
   if [ -z "$keychain_token" ]; then
-    die "Keychain auth missing refresh_token. Run: ${CLI_NAME} auth"
+    die "$missing_message"
   fi
   local container_info
   local container_token
   local container_refresh
-  container_info="$(container_auth_info "$name")"
+  container_info="$(container_auth_info "$name" "$runtime" "$auth_format")"
   IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
   if [ -z "$container_token" ]; then
-    echo "Refreshing OpenAI auth in $name" >&2
-    write_auth_blob_to_container "$name" "$(keychain_auth_blob "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT")"
+    echo "Refreshing $runtime auth in $name" >&2
+    write_auth_blob_to_container "$name" "$(keychain_auth_blob "$runtime" "$auth_format")" "$runtime" "$auth_format"
     return 0
   fi
   if [ "$container_token" = "$keychain_token" ] && [ "$container_refresh" = "$keychain_refresh" ]; then
     return 0
   fi
-  echo "Refreshing OpenAI auth in $name" >&2
-  write_auth_blob_to_container "$name" "$(keychain_auth_blob "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT")"
+  echo "Refreshing $runtime auth in $name" >&2
+  write_auth_blob_to_container "$name" "$(keychain_auth_blob "$runtime" "$auth_format")" "$runtime" "$auth_format"
 }
 
-sync_openai_auth_from_container() {
+sync_runtime_auth_from_container() {
   local name="$1"
+  local runtime="${2:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${3:-$OPENAI_AUTH_FORMAT}"
   local container_info
   local container_token
   local container_refresh
-  container_info="$(container_auth_info "$name")"
+  container_info="$(container_auth_info "$name" "$runtime" "$auth_format")"
   IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
   if [ -z "$container_token" ] || [ -z "$container_refresh" ]; then
     return 0
   fi
-  if ! ensure_keychain "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"; then
+  if ! ensure_keychain "$runtime" "$auth_format"; then
     echo "Keychain auth missing; skipping post-run sync from $name" >&2
     return 0
   fi
   local keychain_info
   local keychain_token
   local keychain_refresh
-  keychain_info="$(keychain_auth_info "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT")"
+  keychain_info="$(keychain_auth_info "$runtime" "$auth_format")"
   IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
   if [ -z "$keychain_token" ]; then
     echo "Keychain auth missing refresh_token; skipping post-run sync from $name" >&2
@@ -1718,7 +1729,17 @@ sync_openai_auth_from_container() {
     return 0
   fi
   echo "Updating Keychain auth from $name" >&2
-  container_auth_blob "$name" | write_keychain_auth_blob "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"
+  container_auth_blob "$name" "$runtime" "$auth_format" | write_keychain_auth_blob "$runtime" "$auth_format"
+}
+
+sync_openai_auth_to_container() {
+  local name="$1"
+  sync_runtime_auth_to_container "$name" "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT" "Missing OpenAI auth in Keychain. Run: ${CLI_NAME} auth"
+}
+
+sync_openai_auth_from_container() {
+  local name="$1"
+  sync_runtime_auth_from_container "$name" "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"
 }
 
 refresh_container_file() {
