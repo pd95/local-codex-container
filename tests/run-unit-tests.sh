@@ -108,6 +108,14 @@ test_use_help_reports_new_command() {
   assert_contains "Usage: agentctl use <runtime> [options]"
 }
 
+test_rm_help_reports_force_option() {
+  begin_test "rm help reports the force option"
+
+  run_capture "$AGENTCTL" rm --help
+  assert_status 0
+  assert_contains '--force      For `rm`, stop the container first if it is running'
+}
+
 test_agent_sh_runtime_info_reports_registry_metadata() {
   begin_test "agent.sh runtime info reports registry metadata"
 
@@ -316,6 +324,38 @@ EOF
   grep -Fq 'bash /usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
   [ -f "$stored_blob_file" ] || fail "Expected auth blob to be written to fake keychain"
   grep -Fq '"refresh_token":"auth-flow-token"' "$stored_blob_file" || fail "Expected auth blob from agent.sh auth read"
+}
+
+test_rm_force_stops_running_container_before_remove() {
+  begin_test "rm --force stops a running container before remove"
+
+  load_codexctl_functions
+
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_running() { [ "$1" = "unit-test-container" ]; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture simple_name_cmd rm --name unit-test-container --force
+  assert_status 0
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
 }
 
 test_image_ref_for_runtime_falls_back_to_legacy_when_present() {
@@ -736,6 +776,7 @@ main() {
   test_system_manifest_help_reports_new_command
   test_runtime_help_reports_new_command
   test_use_help_reports_new_command
+  test_rm_help_reports_force_option
   test_agent_sh_runtime_info_reports_registry_metadata
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_rejects_unsupported_runtime
@@ -743,6 +784,7 @@ main() {
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write
   test_run_auth_flow_uses_agent_sh_auth_contract
+  test_rm_force_stops_running_container_before_remove
   test_image_ref_for_runtime_falls_back_to_legacy_when_present
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check
