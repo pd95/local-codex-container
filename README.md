@@ -105,6 +105,9 @@ agentctl build --snapshot
 # Run the current directory (persistent by default)
 agentctl run
 
+# Create or reuse a container, install Codex if needed, set it preferred, and launch it
+agentctl run --runtime codex --install-runtime
+
 # Run Codex with the Gemma or qwen profile from config.toml
 agentctl run --profile gemma
 agentctl run --profile qwen
@@ -112,8 +115,8 @@ agentctl run --profile qwen
 # Run Codex for a specific directory
 agentctl run --workdir /path/to/project
 
-# Run with a specific image
-agentctl run --image agent-office
+# Run with a specific base image when you need a toolchain
+agentctl run --image agent-python
 
 # Run a specific historical build
 agentctl run --image agent-plain:20260313-154500
@@ -141,6 +144,11 @@ agentctl runtime info codex
 agentctl runtime install codex
 agentctl use codex
 
+# Inspect installable feature packs in an existing container
+agentctl feature list
+agentctl feature info office
+agentctl feature install office
+
 # Recreate a container from the latest image while preserving config
 agentctl refresh
 
@@ -166,6 +174,7 @@ agentctl run --cmd bash
 - Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `agentctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `agentctl exec`.
 - `agentctl run --runtime <runtime>` selects the preferred runtime to launch in the target container before executing the default entrypoint. Add `--install-runtime` to install that runtime first when needed. A practical Claude bootstrap path is now just `agentctl run --runtime claude --install-runtime`.
+- For most new setups, prefer runtime-first flows such as `agentctl run --runtime codex --install-runtime` or `agentctl run --runtime claude --install-runtime` over choosing an image because it happens to bundle a specific agent/runtime.
 - When you use `agentctl run --runtime <runtime>`, agentctl now also performs best-effort pre-run auth replay from Keychain if that runtime exposes host-managed auth and a matching Keychain entry exists. This means a previously authenticated Claude runtime can come up already logged in on a fresh container without a separate manual auth write step.
 - Claude’s native installer can be OOM-killed on Linux if the container is too small. For fresh Claude bootstrap and temporary Claude auth containers, `agentctl` now defaults the create-time memory limit to `4G` unless you explicitly override it.
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
@@ -173,10 +182,12 @@ agentctl run --cmd bash
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
 - `agentctl runtime list` shows installed runtimes in the current container. `agentctl runtime info <runtime>` and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract for a declared runtime, including explicit capability booleans and supported auth formats. The current branch fully wires `codex` and now also ships a real Claude install/update/reset-config/auth adapter.
 - Runtime metadata now lives under `/etc/agentctl/runtimes.d`, and runtime-specific handlers live under `/usr/local/lib/agentctl/runtimes`. `agentctl refresh` updates those directories in-place for existing containers.
+- Feature-pack metadata now lives under `/etc/agentctl/features.d`, and feature-pack handlers live under `/usr/local/lib/agentctl/features`. `agentctl refresh` updates those directories in-place for existing containers too.
 - `agentctl runtime install codex` installs or refreshes the Codex runtime inside an existing container and marks it as preferred for that container.
 - `agentctl runtime install claude` now runs the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`) and, on Alpine, expects `libgcc`, `libstdc++`, and `ripgrep` to be present first.
 - `agentctl runtime update claude` now runs `claude update`.
 - `agentctl runtime reset-config claude` restores a default `~/.claude/settings.json` with `USE_BUILTIN_RIPGREP=0`.
+- `agentctl feature list`, `agentctl feature info office`, and `agentctl feature install office` now expose the first real feature-pack flow. The initial `office` feature targets `agent-python` and installs the core document/PDF/spreadsheet/OCR tooling that previously required `agent-office`.
 - refreshed and rebuilt containers now ship `/etc/profile.d/agentctl-path.sh`, so bash login shells prepend `~/.local/bin` to `PATH` and native Claude installs are available as `claude` without manual shell edits.
 - `agentctl use codex` updates the container-local preferred runtime without changing the default image selection used by `agentctl run`.
 - `agentctl run` is now runtime-neutral at the host layer. Codex still starts with its default `--cd /workdir` behavior, but that default now lives in the Codex runtime adapter instead of being forced on every runtime.
@@ -190,20 +201,22 @@ agentctl run --cmd bash
 
 #### Image selection
 
-Use `--image` when you need a specific toolchain, or set `DEFAULT_IMAGE` in `agentctl` for a permanent default.
+Use `--image` when you need a specific toolchain, or set `DEFAULT_IMAGE` in `agentctl` for a permanent default. For agent/runtime choice, prefer `--runtime` plus `--install-runtime`.
 
 When to use which image:
 
 - `agent-plain`: general-purpose CLI work or small scripts without a heavy runtime.
 - `agent-python`: Python-heavy tasks, data wrangling, and libraries not in the base image.
 - `agent-swift`: Swift projects, SwiftPM builds, and Swift tooling.
-- `agent-office`: transitional compatibility image for document-centric workflows.
+
+`agent-office` remains available only as a legacy compatibility image for older
+document-centric setups. It is no longer part of the primary image strategy.
 
 ### Configuration tweaks
 
 `agentctl` exposes a few top-level constants (in `agentctl`) that you can edit to adjust default behavior:
 
-- `DEFAULT_IMAGE` (default image for `run` and `auth`, e.g. `agent-plain`, `agent-python`, `agent-swift`, `agent-office`)
+- `DEFAULT_IMAGE` (default image for `run` and `auth`, e.g. `agent-plain`, `agent-python`, `agent-swift`)
 - `DEFAULT_NAME_PREFIX` (default local container prefix)
 - `AUTH_NAME_PREFIX` (default auth container prefix)
 - `DEFAULT_SHELL` (default shell for `run --shell` and `exec`)
@@ -282,23 +295,28 @@ The rest of this README explains what `agentctl` does behind the scenes and how 
 
 ### Build agent container images
 
-To build the agent container images for later use, I have written four `DockerFile`s which are installing `agentctl`, `git` and other basic tools (`bash`, `zsh`, `npm`, `file`, `curl`):
+To build the agent container images for later use, I have written three primary `DockerFile`s which are installing `agentctl`, `git` and other basic tools (`bash`, `zsh`, `npm`, `file`, `curl`):
 
 - `DockerFile` for `agent-plain`, a plain Alpine Linux runtime (~191 MB)
 - `DockerFile.python` for `agent-python`, an Alpine-based Python installation (~203 MB, built on top of `agent-plain`)
 - `DockerFile.swift` for `agent-swift`, an Ubuntu-based Swift installation (~1.41 GB)
-- `DockerFile.office` for `agent-office`, a transitional Alpine + Python + Office compatibility image (~417 MB, built on top of `agent-python`)
 
-The curated image set is `agent-plain`, `agent-python`, and `agent-swift`. The
-`agent-office` image remains available as a compatibility bridge for legacy office
-workflows, but it is not a primary curated image.
+The curated image set is `agent-plain`, `agent-python`, and `agent-swift`.
+`DockerFile.office` and `agent-office` remain in the repo only as a legacy
+compatibility bridge for older office-heavy workflows. They are not part of the
+default Phase 4 image matrix and are not built by `agentctl build` unless you
+request them explicitly.
 
 `agentctl build` derives local image names from Dockerfile names using this convention:
 
 - `DockerFile` -> `agent-plain`
 - `DockerFile.<name>` -> `agent-<name>`
 
-That means a custom `DockerFile.custom` becomes the local image `agent-custom`. If it starts with `FROM agent-office`, `agentctl build --image agent-custom` will automatically build `agent-plain`, `agent-python`, `agent-office`, and then `agent-custom`.
+That means a custom `DockerFile.custom` becomes the local image `agent-custom`.
+If it starts with `FROM agent-python`, `agentctl build --image agent-custom`
+will automatically build `agent-plain`, `agent-python`, and then `agent-custom`.
+If you still have a legacy `FROM agent-office` image, that compatibility path
+continues to work when requested explicitly.
 
 The image build process uses `npm` to install the latest `openai/codex` package, and configures `git` to use "Codex CLI" and `codex@localhost` as the container user's identity when interacting with git and to use `main` as the default branch when initializing a new repository.
 
@@ -312,10 +330,11 @@ The image-specific `image.md` files describe the intended toolchain focus:
 
 - `agent-plain`: general shell and Git tooling
 - `agent-python`: Python runtime and the default `/opt/venv`
-- `agent-office`: document, PDF, spreadsheet, and report-generation compatibility tooling
 - `agent-swift`: Swift-on-Linux tooling and related platform constraints
 
-Use the following `container` commands to build the agent images `agent-plain`, `agent-python`, `agent-office`, and `agent-swift` from the corresponding `DockerFile` (build the Alpine images in order so the bases exist):
+Use the following `container` commands to build the primary agent images
+`agent-plain`, `agent-python`, and `agent-swift` from the corresponding
+`DockerFile` (build the Alpine images in order so the bases exist):
 
 ```bash
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
@@ -326,9 +345,6 @@ container image tag agent-plain "agent-plain:${STAMP}"
 container build -t agent-python -f DockerFile.python .
 container image tag agent-python "agent-python:${STAMP}"
 
-container build -t agent-office -f DockerFile.office .
-container image tag agent-office "agent-office:${STAMP}"
-
 container build -t agent-swift -f DockerFile.swift .
 container image tag agent-swift "agent-swift:${STAMP}"
 ```
@@ -336,7 +352,7 @@ container image tag agent-swift "agent-swift:${STAMP}"
 This keeps the stable image names for normal use and also creates immutable timestamped tags for A/B testing and rollback. `agentctl build` automates that same dependency ordering for both the built-in images and any custom local `DockerFile.<name>` images that follow the naming convention above.
 Notes:
 - The Swift image includes `format` and `lint` wrappers for `swift-format` and initializes `swiftly` for toolchain management.
-- The Office image sets up a writable venv at `/opt/venv` and puts it on `PATH` by default.
+- `agent-office` is still buildable manually from `DockerFile.office` if you need the legacy compatibility image for an existing workflow.
 
 #### Build cache behavior (agentctl)
 

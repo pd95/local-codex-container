@@ -11,6 +11,8 @@ readonly DEFAULT_PROFILE="${AGENTCTL_DEFAULT_PROFILE:-gpt-oss}"
 readonly RUN_MODE="${AGENTCTL_RUN_MODE:-local-model}"
 readonly RUNTIME_REGISTRY_DIR="${AGENTCTL_RUNTIME_REGISTRY_DIR:-/etc/agentctl/runtimes.d}"
 readonly RUNTIME_ADAPTER_DIR="${AGENTCTL_RUNTIME_ADAPTER_DIR:-/usr/local/lib/agentctl/runtimes}"
+readonly FEATURE_REGISTRY_DIR="${AGENTCTL_FEATURE_REGISTRY_DIR:-/etc/agentctl/features.d}"
+readonly FEATURE_ADAPTER_DIR="${AGENTCTL_FEATURE_ADAPTER_DIR:-/usr/local/lib/agentctl/features}"
 
 die() {
   printf '%s\n' "$*" >&2
@@ -79,6 +81,22 @@ runtime_adapter_path() {
   printf '%s\n' "$path"
 }
 
+feature_manifest_path() {
+  local feature="$1"
+  local path="${FEATURE_REGISTRY_DIR}/${feature}.json"
+
+  [ -f "$path" ] || return 1
+  printf '%s\n' "$path"
+}
+
+feature_adapter_path() {
+  local feature="$1"
+  local path="${FEATURE_ADAPTER_DIR}/${feature}.sh"
+
+  [ -f "$path" ] || return 1
+  printf '%s\n' "$path"
+}
+
 runtime_manifest_string() {
   local runtime="$1" key="$2"
   local manifest
@@ -95,8 +113,28 @@ runtime_manifest_json() {
   jq -c "$key // []" "$manifest"
 }
 
+feature_manifest_string() {
+  local feature="$1" key="$2"
+  local manifest
+
+  manifest="$(feature_manifest_path "$feature")" || return 1
+  jq -er "$key // empty" "$manifest"
+}
+
+feature_manifest_json() {
+  local feature="$1" key="$2"
+  local manifest
+
+  manifest="$(feature_manifest_path "$feature")" || return 1
+  jq -c "$key // []" "$manifest"
+}
+
 runtime_known() {
   runtime_manifest_path "$1" >/dev/null 2>&1
+}
+
+feature_known() {
+  feature_manifest_path "$1" >/dev/null 2>&1
 }
 
 runtime_ids() {
@@ -104,6 +142,16 @@ runtime_ids() {
 
   [ -d "$RUNTIME_REGISTRY_DIR" ] || return 0
   for path in "$RUNTIME_REGISTRY_DIR"/*.json; do
+    [ -e "$path" ] || continue
+    basename "$path" .json
+  done | sort
+}
+
+feature_ids() {
+  local path
+
+  [ -d "$FEATURE_REGISTRY_DIR" ] || return 0
+  for path in "$FEATURE_REGISTRY_DIR"/*.json; do
     [ -e "$path" ] || continue
     basename "$path" .json
   done | sort
@@ -163,6 +211,26 @@ runtime_commands_json() {
   runtime_manifest_json "$1" '.commands'
 }
 
+feature_display_name() {
+  feature_manifest_string "$1" '.display_name'
+}
+
+feature_install_method() {
+  feature_manifest_string "$1" '.install_method'
+}
+
+feature_description() {
+  feature_manifest_string "$1" '.description'
+}
+
+feature_capabilities_json() {
+  feature_manifest_json "$1" '.capabilities'
+}
+
+feature_commands_json() {
+  feature_manifest_json "$1" '.commands'
+}
+
 runtime_command_exists() {
   runtime_command_path "$1" >/dev/null 2>&1
 }
@@ -181,6 +249,11 @@ ensure_runtime_known() {
   runtime_known "$runtime" || die "unsupported runtime: $runtime"
 }
 
+ensure_feature_known() {
+  local feature="$1"
+  feature_known "$feature" || die "unsupported feature: $feature"
+}
+
 reset_runtime_hooks() {
   unset -f \
     agent_runtime_run \
@@ -190,6 +263,15 @@ reset_runtime_hooks() {
     agent_runtime_auth_read \
     agent_runtime_auth_write \
     agent_runtime_auth_login \
+    >/dev/null 2>&1 || true
+}
+
+reset_feature_hooks() {
+  unset -f \
+    agent_feature_installed \
+    agent_feature_install \
+    agent_feature_remove \
+    agent_feature_update \
     >/dev/null 2>&1 || true
 }
 
@@ -204,11 +286,34 @@ load_runtime_adapter() {
   . "$adapter"
 }
 
+load_feature_adapter() {
+  local feature="$1"
+  local adapter
+
+  ensure_feature_known "$feature"
+  adapter="$(feature_adapter_path "$feature")" || die "missing feature adapter: $feature"
+  reset_feature_hooks
+  # shellcheck source=/dev/null
+  . "$adapter"
+}
+
 ensure_runtime_installed() {
   local runtime="$1"
   ensure_runtime_known "$runtime"
   runtime_command_exists "$runtime" && return 0
   die "runtime not installed: $runtime (run: agent.sh runtime install $runtime)"
+}
+
+feature_installed_json() {
+  local feature="$1"
+
+  ensure_feature_known "$feature"
+  load_feature_adapter "$feature"
+  if agent_feature_installed "$feature"; then
+    printf '%s\n' true
+  else
+    printf '%s\n' false
+  fi
 }
 
 run_runtime() {
@@ -285,6 +390,36 @@ json_runtime_capabilities() {
     }'
 }
 
+json_feature_info() {
+  local feature="$1"
+  local installed_json commands_json capabilities_json
+
+  ensure_feature_known "$feature"
+  installed_json="$(feature_installed_json "$feature")"
+  commands_json="$(feature_commands_json "$feature")"
+  capabilities_json="$(feature_capabilities_json "$feature")"
+
+  jq -n \
+    --arg feature "$feature" \
+    --arg image "$IMAGE_NAME" \
+    --arg display_name "$(feature_display_name "$feature")" \
+    --arg install_method "$(feature_install_method "$feature")" \
+    --arg description "$(feature_description "$feature")" \
+    --argjson commands "$commands_json" \
+    --argjson capabilities "$capabilities_json" \
+    --argjson installed "$installed_json" \
+    '{
+      feature: $feature,
+      image: $image,
+      display_name: $display_name,
+      installed: $installed,
+      install_method: $install_method,
+      description: $description,
+      capabilities: $capabilities,
+      commands: $commands
+    }'
+}
+
 json_system_manifest() {
   local package_manager packages_json
 
@@ -327,6 +462,43 @@ auth_login() {
   ensure_runtime_installed "$runtime"
   load_runtime_adapter "$runtime"
   agent_runtime_auth_login "$runtime"
+}
+
+feature_list() {
+  feature_ids
+}
+
+feature_install() {
+  local feature="${1:-}"
+
+  ensure_feature_known "$feature"
+  load_feature_adapter "$feature"
+  if ! printf '%s' "$(feature_capabilities_json "$feature")" | jq -e '(.install // false) == true' >/dev/null; then
+    die "feature does not support install: $feature"
+  fi
+  agent_feature_install "$feature"
+}
+
+feature_remove() {
+  local feature="${1:-}"
+
+  ensure_feature_known "$feature"
+  load_feature_adapter "$feature"
+  if ! printf '%s' "$(feature_capabilities_json "$feature")" | jq -e '(.remove // false) == true' >/dev/null; then
+    die "feature does not support remove: $feature"
+  fi
+  agent_feature_remove "$feature"
+}
+
+feature_update() {
+  local feature="${1:-}"
+
+  ensure_feature_known "$feature"
+  load_feature_adapter "$feature"
+  if ! printf '%s' "$(feature_capabilities_json "$feature")" | jq -e '(.update // false) == true' >/dev/null; then
+    die "feature does not support update: $feature"
+  fi
+  agent_feature_update "$feature"
 }
 
 preferred_get() {
@@ -381,6 +553,7 @@ Usage:
   agent.sh version
   agent.sh refresh
   agent.sh runtime list
+  agent.sh feature list
   agent.sh preferred get
   agent.sh preferred set codex
   agent.sh runtime info codex
@@ -388,6 +561,9 @@ Usage:
   agent.sh runtime install codex
   agent.sh runtime update codex
   agent.sh runtime reset-config codex
+  agent.sh feature info office
+  agent.sh feature install office
+  agent.sh feature remove office
   agent.sh auth login codex
   agent.sh auth read codex json_refresh_token
   agent.sh auth write codex json_refresh_token [VALUE]
@@ -434,6 +610,28 @@ main() {
           ;;
         *)
           die "unknown runtime command: ${1:-}"
+          ;;
+      esac
+      ;;
+    feature)
+      case "${1:-}" in
+        list)
+          feature_list
+          ;;
+        info)
+          json_feature_info "${2:-}"
+          ;;
+        install)
+          feature_install "${2:-}"
+          ;;
+        remove)
+          feature_remove "${2:-}"
+          ;;
+        update)
+          feature_update "${2:-}"
+          ;;
+        *)
+          die "unknown feature command: ${1:-}"
           ;;
       esac
       ;;

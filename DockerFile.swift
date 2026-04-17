@@ -63,9 +63,12 @@ COPY agentctl-path.sh /etc/profile.d/agentctl-path.sh
 COPY agent.sh /usr/local/bin/agent.sh
 COPY runtimes /usr/local/lib/agentctl/runtimes
 COPY runtimes.d /etc/agentctl/runtimes.d
+COPY features /usr/local/lib/agentctl/features
+COPY features.d /etc/agentctl/features.d
 RUN chmod 0755 /usr/local/bin/agent.sh \
  && chmod 0644 /etc/profile.d/agentctl-path.sh /etc/claudectl/settings.json \
  && find /usr/local/lib/agentctl/runtimes -type f -name '*.sh' -exec chmod 0644 {} + \
+ && find /usr/local/lib/agentctl/features -type f -name '*.sh' -exec chmod 0644 {} + \
  && mkdir -p /etc/agentctl \
  && printf '%s\n' codex > /etc/agentctl/preferred-runtime
 

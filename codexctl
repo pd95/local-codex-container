@@ -283,6 +283,26 @@ image_family_preferred() {
   esac
 }
 
+is_legacy_compat_image_family() {
+  case "$1" in
+    agent-office|codex-office) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+warn_legacy_compat_image_usage() {
+  local image="$1"
+  local family
+
+  family="${image%%:*}"
+  if ! is_legacy_compat_image_family "$family"; then
+    return 0
+  fi
+
+  warn "Image $family is a legacy compatibility image. Phase 4 keeps only agent-plain, agent-python, and agent-swift as first-class base images."
+  warn "Prefer agent-python plus runtime installation unless you are intentionally reusing an older office-focused setup."
+}
+
 image_ref_for_runtime() {
   local image="$1"
   local preferred
@@ -476,6 +496,7 @@ Commands:
   build      Build agent images
   run        Create/start a container for the current directory
   runtime    Manage coding runtimes inside an existing container
+  feature    Manage installable feature packs inside an existing container
   use        Select the preferred runtime for an existing container
   refresh    Refresh agentctl-managed files in an existing container
   system-manifest  Print a container package manifest
@@ -507,6 +528,8 @@ Options:
 
 Each successful build keeps the stable image name (for example `agent-plain`) and
 also adds an immutable UTC timestamp tag (for example `agent-plain:20260313-154500`).
+The primary built-in/base images are `agent-plain`, `agent-python`, and `agent-swift`.
+`agent-office` remains available only as a legacy compatibility image when explicitly requested.
 Local image names follow this convention:
   agent-plain   -> DockerFile
   agent-<name>  -> DockerFile.<name>
@@ -565,6 +588,19 @@ Examples:
   $CLI_NAME runtime list
   $CLI_NAME runtime info codex
   $CLI_NAME runtime install codex
+EOF
+}
+
+usage_feature() {
+  cat <<EOF
+Usage: $CLI_NAME feature <list|info|install|remove|update> [options] [feature]
+
+Options:
+  --name NAME  Container name (default: agent-<dir>)
+
+Examples:
+  $CLI_NAME feature list
+  $CLI_NAME feature info office
 EOF
 }
 
@@ -1153,6 +1189,7 @@ build_cmd() {
 
   if [ -n "$image" ]; then
     image="$(image_family_preferred "$image")"
+    warn_legacy_compat_image_usage "$image"
   fi
 
   require_container
@@ -1456,6 +1493,8 @@ run_auth_flow() {
   refresh_container_file "$auth_name" "$SCRIPT_DIR/agentctl-path.sh" "/etc/profile.d/agentctl-path.sh" "root:root" "644"
   refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
   refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/features" "/usr/local/lib/agentctl/features" "root:root" "644" "755"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/features.d" "/etc/agentctl/features.d" "root:root" "644" "755"
   runtime_info="$("$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime info "$runtime")" || die "Failed to inspect runtime auth contract: $runtime"
   if ! printf '%s' "$runtime_info" | jq -e '.installed == true' >/dev/null; then
     if printf '%s' "$runtime_info" | jq -e '(.capabilities.install // false) == true' >/dev/null; then
@@ -1888,6 +1927,8 @@ refresh_cmd() {
   refresh_container_file "$name" "$SCRIPT_DIR/agentctl-path.sh" "/etc/profile.d/agentctl-path.sh" "root:root" "644"
   refresh_container_tree "$name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
   refresh_container_tree "$name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features" "/usr/local/lib/agentctl/features" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features.d" "/etc/agentctl/features.d" "root:root" "644" "755"
   if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -x /usr/local/bin/agent.sh; then
     "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh refresh >/dev/null 2>&1 || true
   fi
@@ -1918,6 +1959,37 @@ run_agent_sh_in_container() {
   fi
 
   if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+
+  return "$status"
+}
+
+run_agent_sh_in_container_root() {
+  local name="$1"
+  shift
+  local was_running=0
+  local started_for_command=0
+  local status=0
+
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_command=1
+  fi
+
+  if "$CONTAINER_CMD" exec -u 0 "$name" bash /usr/local/bin/agent.sh "$@"; then
     status=0
   else
     status=$?
@@ -1970,6 +2042,54 @@ runtime_cmd() {
       ;;
     *)
       die "Unknown runtime command: $subcommand"
+      ;;
+  esac
+}
+
+feature_cmd() {
+  local name=""
+  local subcommand=""
+  local feature=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_feature; return 0 ;;
+      *)
+        if [ -z "$subcommand" ]; then
+          subcommand="$1"
+        elif [ -z "$feature" ]; then
+          feature="$1"
+        else
+          die "Unexpected argument for feature: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+
+  case "$subcommand" in
+    list)
+      run_agent_sh_in_container "$name" feature list
+      ;;
+    info)
+      [ -n "$feature" ] || die "Missing feature for $subcommand"
+      run_agent_sh_in_container "$name" feature "$subcommand" "$feature"
+      ;;
+    install|remove|update)
+      [ -n "$feature" ] || die "Missing feature for $subcommand"
+      run_agent_sh_in_container_root "$name" feature "$subcommand" "$feature"
+      ;;
+    "")
+      usage_feature
+      ;;
+    *)
+      die "Unknown feature command: $subcommand"
       ;;
   esac
 }
@@ -2573,6 +2693,7 @@ run_cmd() {
 
   [ -n "$image" ] || image="$DEFAULT_IMAGE"
   image="$(image_ref_for_runtime "$image")"
+  warn_legacy_compat_image_usage "$image"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
     name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
   fi
@@ -2623,6 +2744,7 @@ auth_cmd() {
     name="$(default_name "$AUTH_NAME_PREFIX")"
   fi
   image="$(image_ref_for_runtime "$image")"
+  warn_legacy_compat_image_usage "$image"
   run_auth_flow "$image" "$name" "$runtime"
   if [ "$runtime" = "$OPENAI_RUNTIME_ID" ]; then
     echo "Auth updated. Restart any running --openai containers to pick up the new token." >&2
@@ -2691,6 +2813,7 @@ upgrade_cmd() {
 
   [ -n "$image" ] || image="$current_image"
   image="$(image_ref_for_runtime "$image")"
+  warn_legacy_compat_image_usage "$image"
   [ -n "$cpu" ] || cpu="$current_cpu"
   [ -n "$mem" ] || mem="$current_mem"
   image_exists "$image" || die "Image not found: $image"
@@ -2940,6 +3063,7 @@ case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
   runtime) shift; runtime_cmd "$@" ;;
+  feature) shift; feature_cmd "$@" ;;
   use) shift; use_cmd "$@" ;;
   refresh) shift; refresh_cmd "$@" ;;
   system-manifest) shift; system_manifest_cmd "$@" ;;
