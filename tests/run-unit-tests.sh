@@ -68,13 +68,118 @@ test_run_profile_wires_selected_profile() {
 
   run_cmd --name unit-test-container --workdir "$workdir" --profile gemma
 
-  [ "$captured_pre_exec" = "local_model_pre_exec" ] || fail "Expected local_model_pre_exec, got: $captured_pre_exec"
+  [ "$captured_pre_exec" = "run_pre_exec" ] || fail "Expected run_pre_exec, got: $captured_pre_exec"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_RUN_MODE=' || fail "Expected agent.sh launch wrapper, got: $captured_cmd"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_DEFAULT_PROFILE=' || fail "Expected profile to be passed to agent.sh, got: $captured_cmd"
   printf '%s\n' "$captured_cmd" | grep -Fq '/usr/local/bin/agent.sh run' || fail "Expected agent.sh run launch path, got: $captured_cmd"
   if printf '%s\n' "$captured_cmd" | grep -Fq -- '--cd /workdir'; then
     fail "Did not expect codex-specific --cd flag in generic host launch path: $captured_cmd"
   fi
+}
+
+test_run_help_reports_runtime_options() {
+  begin_test "run help reports runtime selection options"
+
+  run_capture "$AGENTCTL" run --help
+  assert_status 0
+  assert_contains "--runtime NAME  Preferred runtime to launch"
+  assert_contains "--install-runtime  Install the selected runtime before launch"
+}
+
+test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
+  begin_test "run_cmd can select and install a runtime before launch"
+
+  load_codexctl_functions
+
+  local captured_pre_exec=""
+  local workdir
+
+  workdir="$(new_workdir)"
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  run_container() {
+    captured_pre_exec="$9"
+  }
+
+  run_cmd --name unit-test-container --workdir "$workdir" --runtime claude --install-runtime --shell
+
+  [ "$captured_pre_exec" = "run_pre_exec" ] || fail "Expected run_pre_exec, got: $captured_pre_exec"
+  [ "$RUN_SELECTED_RUNTIME" = "claude" ] || fail "Expected runtime claude, got: $RUN_SELECTED_RUNTIME"
+  [ "$RUN_INSTALL_RUNTIME" -eq 1 ] || fail "Expected install-runtime to be enabled"
+  [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 0 ] || fail "Did not expect local-model preflight for Claude shell launch"
+}
+
+test_run_cmd_rejects_non_codex_profile() {
+  begin_test "run_cmd rejects --profile for non-codex runtimes"
+
+  local temp_dir
+  local unit_script
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-run-invalid.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  unit_script="$temp_dir/check.sh"
+
+  cat >"$unit_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$CODEXCTL"
+require_container() { return 0; }
+run_cmd --runtime claude --profile gemma
+EOF
+  chmod +x "$unit_script"
+
+  run_capture bash "$unit_script"
+  assert_status 1
+  assert_contains "--profile only applies to the codex runtime"
+}
+
+test_run_cmd_rejects_install_runtime_without_runtime() {
+  begin_test "run_cmd rejects --install-runtime without --runtime"
+
+  local temp_dir
+  local unit_script
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-run-invalid.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  unit_script="$temp_dir/check.sh"
+
+  cat >"$unit_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$CODEXCTL"
+require_container() { return 0; }
+run_cmd --install-runtime
+EOF
+  chmod +x "$unit_script"
+
+  run_capture bash "$unit_script"
+  assert_status 1
+  assert_contains "--install-runtime requires --runtime"
+}
+
+test_run_cmd_rejects_openai_for_non_codex_runtime() {
+  begin_test "run_cmd rejects --openai for non-codex runtimes"
+
+  local temp_dir
+  local unit_script
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-run-invalid.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  unit_script="$temp_dir/check.sh"
+
+  cat >"$unit_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$CODEXCTL"
+require_container() { return 0; }
+run_cmd --runtime claude --openai
+EOF
+  chmod +x "$unit_script"
+
+  run_capture bash "$unit_script"
+  assert_status 1
+  assert_contains "--openai currently requires --runtime codex"
 }
 
 test_run_help_reports_profile_default() {
@@ -1605,6 +1710,11 @@ main() {
 
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
+  test_run_help_reports_runtime_options
+  test_run_cmd_runtime_selection_prepares_runtime_before_launch
+  test_run_cmd_rejects_non_codex_profile
+  test_run_cmd_rejects_install_runtime_without_runtime
+  test_run_cmd_rejects_openai_for_non_codex_runtime
   test_agentctl_wrapper_usage_banner
   test_refresh_help_reports_new_command
   test_system_manifest_help_reports_new_command

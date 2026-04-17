@@ -525,6 +525,8 @@ Options:
   --name NAME     Container name (default: agent-<dir>)
   --image NAME    Image to use (default: agent-plain)
   --workdir PATH  Host directory to mount at /workdir (default: cwd)
+  --runtime NAME  Preferred runtime to launch in the container (e.g. codex, claude)
+  --install-runtime  Install the selected runtime before launch
   --profile NAME  Codex profile to use (default: gpt-oss)
   --openai        Use OpenAI mode (device auth)
   --auth          Force OpenAI login flow
@@ -2117,23 +2119,14 @@ run_mode() {
 
   if [ "$openai" -eq 1 ]; then
     runtime_mode="openai"
-    pre_exec="openai_pre_exec"
     post_exec="openai_post_exec"
     cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile")
     if [ "$auth" -eq 1 ] || ! ensure_keychain; then
       run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
     fi
-  else
-    if [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ]; then
-      pre_exec="local_model_pre_exec"
-    fi
   fi
-  if [ "$update" -eq 1 ]; then
-    case "$pre_exec" in
-      openai_pre_exec) pre_exec="openai_update_pre_exec" ;;
-      local_model_pre_exec) pre_exec="local_model_update_pre_exec" ;;
-      *) pre_exec="update_codex_pre_exec" ;;
-    esac
+  if [ "$RUN_UPDATE_CODEX" -eq 1 ] || [ -n "$RUN_SELECTED_RUNTIME" ] || [ "$RUN_SYNC_OPENAI" -eq 1 ] || [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ]; then
+    pre_exec="run_pre_exec"
   fi
 
   if [ "${#cmd_override[@]}" -gt 0 ]; then
@@ -2152,6 +2145,35 @@ openai_pre_exec() {
 openai_post_exec() {
   local name="$1"
   sync_openai_auth_from_container "$name"
+}
+
+RUN_SELECTED_RUNTIME=""
+RUN_INSTALL_RUNTIME=0
+RUN_SYNC_OPENAI=0
+RUN_LOCAL_MODEL_PREFLIGHT=0
+RUN_UPDATE_CODEX=0
+
+run_pre_exec() {
+  local name="$1"
+
+  if [ "$RUN_UPDATE_CODEX" -eq 1 ]; then
+    update_codex_pre_exec "$name"
+  fi
+
+  if [ -n "$RUN_SELECTED_RUNTIME" ]; then
+    if [ "$RUN_INSTALL_RUNTIME" -eq 1 ]; then
+      run_agent_sh_in_container "$name" runtime install "$RUN_SELECTED_RUNTIME"
+    fi
+    run_agent_sh_in_container "$name" preferred set "$RUN_SELECTED_RUNTIME"
+  fi
+
+  if [ "$RUN_SYNC_OPENAI" -eq 1 ]; then
+    sync_openai_auth_to_container "$name"
+  fi
+
+  if [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ]; then
+    local_model_preflight "$name" strict
+  fi
 }
 
 local_model_preflight_info() {
@@ -2423,6 +2445,8 @@ local_model_update_pre_exec() {
 run_cmd() {
   local name=""
   local image=""
+  local runtime=""
+  local install_runtime=0
   local openai=0
   local auth=0
   local update=0
@@ -2430,6 +2454,7 @@ run_cmd() {
   local shell=0
   local reset_config=0
   local profile="${DEFAULT_CODEX_PROFILE}"
+  local profile_set=0
   local read_only=0
   local cpu=""
   local mem=""
@@ -2443,6 +2468,8 @@ run_cmd() {
       --name) name="$2"; shift 2 ;;
       --image) image="$2"; shift 2 ;;
       --workdir) workdir="$2"; shift 2 ;;
+      --runtime) runtime="$2"; shift 2 ;;
+      --install-runtime) install_runtime=1; shift ;;
       --openai) openai=1; shift ;;
       --auth) auth=1; shift ;;
       --reset-config) reset_config=1; shift ;;
@@ -2450,7 +2477,7 @@ run_cmd() {
       --temp) temp=1; shift ;;
       --read-only) read_only=1; shift ;;
       --shell) shell=1; shell_set=1; shift ;;
-      --profile) profile="$2"; shift 2 ;;
+      --profile) profile="$2"; profile_set=1; shift 2 ;;
       --cmd) shift; cmd_override_set=1; cmd_override=("$@"); break ;;
       --cpu) cpu="$2"; shift 2 ;;
       --mem) mem="$2"; shift 2 ;;
@@ -2474,6 +2501,15 @@ run_cmd() {
   if [ "$auth" -eq 1 ] && [ "$openai" -eq 0 ]; then
     die "--auth requires --openai"
   fi
+  if [ "$install_runtime" -eq 1 ] && [ -z "$runtime" ]; then
+    die "--install-runtime requires --runtime"
+  fi
+  if [ -n "$runtime" ] && [ "$openai" -eq 1 ] && [ "$runtime" != "$OPENAI_RUNTIME_ID" ]; then
+    die "--openai currently requires --runtime $OPENAI_RUNTIME_ID"
+  fi
+  if [ -n "$runtime" ] && [ "$runtime" != "codex" ] && [ "$profile_set" -eq 1 ]; then
+    die "--profile only applies to the codex runtime"
+  fi
 
   if [ -z "$workdir" ]; then
     workdir="$PWD"
@@ -2490,6 +2526,20 @@ run_cmd() {
   fi
   if [ "$temp" -eq 0 ] && [ -n "$name" ] && container_exists "$name" && { [ -n "$cpu" ] || [ -n "$mem" ]; }; then
     die "--cpu and --mem only apply when creating a new container. Use ${CLI_NAME} upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
+  fi
+
+  RUN_SELECTED_RUNTIME="$runtime"
+  RUN_INSTALL_RUNTIME="$install_runtime"
+  RUN_SYNC_OPENAI=0
+  RUN_LOCAL_MODEL_PREFLIGHT=0
+  RUN_UPDATE_CODEX=0
+  if [ "$openai" -eq 1 ]; then
+    RUN_SYNC_OPENAI=1
+  elif [ "$shell" -eq 0 ] && [ "${#cmd_override[@]}" -eq 0 ] && { [ -z "$runtime" ] || [ "$runtime" = "codex" ]; }; then
+    RUN_LOCAL_MODEL_PREFLIGHT=1
+  fi
+  if [ "$update" -eq 1 ]; then
+    RUN_UPDATE_CODEX=1
   fi
 
   run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" "$profile" ${cmd_override[@]+"${cmd_override[@]}"}

@@ -118,6 +118,9 @@ agentctl run --image agent-office
 # Run a specific historical build
 agentctl run --image agent-plain:20260313-154500
 
+# Create or reuse a container, install Claude if needed, set it preferred, and launch it
+agentctl run --runtime claude --install-runtime
+
 # Read-only workdir mount
 agentctl run --read-only
 
@@ -162,6 +165,7 @@ agentctl run --cmd bash
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `agent-plain:20260313-154500`. By default `agentctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM agent...` dependencies, and builds them in dependency order. Use `agentctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
 - Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `agentctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `agentctl exec`.
+- `agentctl run --runtime <runtime>` selects the preferred runtime to launch in the target container before executing the default entrypoint. Add `--install-runtime` to install that runtime first when needed. A practical Claude bootstrap path is now just `agentctl run --runtime claude --install-runtime`.
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `agentctl` for a static default. All default images include both `bash` and `zsh`.
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
@@ -226,6 +230,7 @@ agentctl --help          # show command overview and available subcommands/optio
 agentctl auth            # run codex device-auth and store it in Keychain
 agentctl auth --runtime codex  # explicit equivalent of the default auth flow
 agentctl auth --runtime claude  # install/login Claude in a temp auth container and store credentials in Keychain
+agentctl run --runtime claude --install-runtime  # bootstrap and launch Claude in one command
 agentctl runtime list    # list installed runtimes in the current container
 agentctl runtime info codex  # inspect manifest-backed runtime metadata
 agentctl runtime info claude  # inspect Claude runtime metadata/capabilities
