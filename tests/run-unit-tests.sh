@@ -159,6 +159,165 @@ test_agent_sh_preferred_round_trip() {
   assert_contains "codex"
 }
 
+test_container_auth_info_uses_agent_sh_auth_read() {
+  begin_test "container_auth_info reads auth via agent.sh auth read"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local exec_log_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-read.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  exec_log_file="$temp_dir/exec.log"
+
+  auth_info_from_json() { cat; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start|stop)
+        ;;
+      exec)
+        shift
+        if [ "$1" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        printf '%s\n' "$*" >>"$exec_log_file"
+        printf 'unit-token\t2026-04-17T00:00:00Z'
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture container_auth_info unit-test-container
+  assert_status 0
+  assert_contains $'unit-token\t2026-04-17T00:00:00Z'
+  grep -Fq '/usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
+}
+
+test_write_auth_blob_to_container_uses_agent_sh_auth_write() {
+  begin_test "write_auth_blob_to_container writes auth via agent.sh auth write"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local exec_log_file
+  local payload_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-write.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  exec_log_file="$temp_dir/exec.log"
+  payload_file="$temp_dir/payload.json"
+
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start|stop)
+        ;;
+      exec)
+        shift
+        if [ "$1" = "-i" ]; then
+          shift
+        fi
+        if [ "$1" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        printf '%s\n' "$*" >>"$exec_log_file"
+        cat >"$payload_file"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture write_auth_blob_to_container unit-test-container '{"refresh_token":"write-token"}'
+  assert_status 0
+  grep -Fxq '{"refresh_token":"write-token"}' "$payload_file" || fail "Expected auth payload to be piped through agent.sh auth write"
+  grep -Fq '/usr/local/bin/agent.sh auth write codex json_refresh_token' "$exec_log_file" || fail "Expected auth write via agent.sh"
+}
+
+test_run_auth_flow_uses_agent_sh_auth_contract() {
+  begin_test "run_auth_flow uses agent.sh auth login and auth read"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local fake_keychain
+  local stored_blob_file
+  local exec_log_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  fake_keychain="$temp_dir/fake-keychain.sh"
+  stored_blob_file="$temp_dir/stored-auth.json"
+  exec_log_file="$temp_dir/exec.log"
+
+  cat >"$fake_keychain" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  write)
+    cat >"$stored_blob_file"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$fake_keychain"
+
+  KEYCHAIN_SCRIPT="$fake_keychain"
+  container_exists() { return 1; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      create|start|stop|rm)
+        return 0
+        ;;
+      exec)
+        shift
+        if [ "$1" = "-it" ]; then
+          shift
+        fi
+        if [ "$1" = "unit-auth-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        printf '%s\n' "$*" >>"$exec_log_file"
+        if [ "$*" = "bash /usr/local/bin/agent.sh auth read codex json_refresh_token" ]; then
+          printf '{"refresh_token":"auth-flow-token","last_refresh":"2026-04-17T01:02:03Z"}'
+        fi
+        return 0
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture run_auth_flow agent-plain unit-auth-container
+  assert_status 0
+  grep -Fq 'bash -lc exec bash /usr/local/bin/agent.sh auth login codex' "$exec_log_file" || fail "Expected auth login via agent.sh"
+  grep -Fq 'bash /usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
+  [ -f "$stored_blob_file" ] || fail "Expected auth blob to be written to fake keychain"
+  grep -Fq '"refresh_token":"auth-flow-token"' "$stored_blob_file" || fail "Expected auth blob from agent.sh auth read"
+}
+
 test_image_ref_for_runtime_falls_back_to_legacy_when_present() {
   begin_test "image_ref_for_runtime prefers canonical names but falls back to legacy refs"
 
@@ -231,6 +390,7 @@ EOF
 
   PATH="$fake_dir:$old_path"
   CONTAINER_CMD=container
+  unset -f container 2>/dev/null || true
 
   run_capture require_container_backup_support
   assert_status 0
@@ -580,6 +740,9 @@ main() {
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_rejects_unsupported_runtime
   test_agent_sh_preferred_round_trip
+  test_container_auth_info_uses_agent_sh_auth_read
+  test_write_auth_blob_to_container_uses_agent_sh_auth_write
+  test_run_auth_flow_uses_agent_sh_auth_contract
   test_image_ref_for_runtime_falls_back_to_legacy_when_present
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check

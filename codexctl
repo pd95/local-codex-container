@@ -28,6 +28,8 @@ SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 CLI_NAME="${AGENTCTL_NAME:-$(basename -- "$SCRIPT_PATH")}"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
+OPENAI_RUNTIME_ID="codex"
+OPENAI_AUTH_FORMAT="json_refresh_token"
 
 die() {
   echo "Error: $*" >&2
@@ -1419,8 +1421,8 @@ run_auth_flow() {
   created=1
 
   "$CONTAINER_CMD" start "$auth_name"
-  "$CONTAINER_CMD" exec -it "$auth_name" bash -lc 'codex login --device-auth'
-  "$KEYCHAIN_SCRIPT" store-from-container "$auth_name"
+  "$CONTAINER_CMD" exec -it "$auth_name" bash -lc "exec bash /usr/local/bin/agent.sh auth login $OPENAI_RUNTIME_ID"
+  "$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh auth read "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT" | "$KEYCHAIN_SCRIPT" write
   "$CONTAINER_CMD" stop "$auth_name"
   "$CONTAINER_CMD" rm "$auth_name"
   created=0
@@ -1520,13 +1522,54 @@ keychain_auth_info() {
   "$KEYCHAIN_SCRIPT" read | auth_info_from_json
 }
 
+keychain_auth_blob() {
+  "$KEYCHAIN_SCRIPT" read
+}
+
+write_keychain_auth_blob() {
+  "$KEYCHAIN_SCRIPT" write
+}
+
+container_auth_blob() {
+  local name="$1"
+  if ! run_agent_sh_in_container "$name" auth read "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"; then
+    return 0
+  fi
+}
+
+write_auth_blob_to_container() {
+  local name="$1"
+  local payload="$2"
+  local was_running=0
+  local started_for_command=0
+
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_command=1
+  fi
+
+  printf '%s' "$payload" | "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh auth write "$OPENAI_RUNTIME_ID" "$OPENAI_AUTH_FORMAT"
+
+  if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+}
+
 container_auth_info() {
   local name="$1"
-  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f /home/coder/.codex/auth.json; then
+  local blob
+  blob="$(container_auth_blob "$name")"
+  if [ -z "$blob" ]; then
     echo -e "\t"
     return 0
   fi
-  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat /home/coder/.codex/auth.json | auth_info_from_json
+  printf '%s' "$blob" | auth_info_from_json
 }
 
 sync_openai_auth_to_container() {
@@ -1549,14 +1592,14 @@ sync_openai_auth_to_container() {
   IFS=$'\t' read -r container_token container_refresh <<<"$container_info"
   if [ -z "$container_token" ]; then
     echo "Refreshing OpenAI auth in $name" >&2
-    "$KEYCHAIN_SCRIPT" load-to-container "$name"
+    write_auth_blob_to_container "$name" "$(keychain_auth_blob)"
     return 0
   fi
   if [ "$container_token" = "$keychain_token" ] && [ "$container_refresh" = "$keychain_refresh" ]; then
     return 0
   fi
   echo "Refreshing OpenAI auth in $name" >&2
-  "$KEYCHAIN_SCRIPT" load-to-container "$name"
+  write_auth_blob_to_container "$name" "$(keychain_auth_blob)"
 }
 
 sync_openai_auth_from_container() {
@@ -1586,7 +1629,7 @@ sync_openai_auth_from_container() {
     return 0
   fi
   echo "Updating Keychain auth from $name" >&2
-  "$KEYCHAIN_SCRIPT" store-from-container "$name"
+  container_auth_blob "$name" | write_keychain_auth_blob
 }
 
 refresh_container_file() {

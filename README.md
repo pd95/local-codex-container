@@ -486,7 +486,9 @@ container rm "codex-`basename $PWD`"
 
 #### Store auth.json in macOS Keychain
 
-After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The file lives at `/home/coder/.codex/auth.json` inside the container and contains sensitive tokens. Use `codex-auth-keychain.sh` to move it into the Keychain:
+After you complete the OpenAI device-auth login flow, you may want to keep a copy of the device authorization tokens in your macOS Keychain. This is only relevant when `auth.json` exists (device-auth creates it). The runtime keeps that file in its own private state, but `agentctl run --openai` and `agentctl auth` now sync through `agent.sh auth read/write` rather than reading the runtime-private path directly from the host.
+
+If you want to move the current container file into the Keychain manually, `codex-auth-keychain.sh` still provides direct compatibility helpers:
 
 ```bash
 codex-auth-keychain.sh store-from-container "codex-`basename $PWD`"
@@ -502,7 +504,7 @@ Notes:
 
 - The container must be running for both commands.
 - The default path is `/home/coder/.codex/auth.json` unless you pass an explicit path.
-- `agentctl run --openai` and `agentctl auth` automatically sync the Keychain auth into running containers when it differs.
+- `agentctl run --openai` and `agentctl auth` automatically sync the Keychain auth into running containers when it differs, using `agent.sh auth read/write`.
 - `agentctl run --openai` saves refreshed auth back to Keychain when the container reports a newer refresh time (and that field is present).
 - `agentctl run --profile <name>` sets the Codex profile used by the container.
   Profiles are defined in `config.toml` and control which model to use.
