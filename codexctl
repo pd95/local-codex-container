@@ -1429,6 +1429,13 @@ run_auth_flow() {
   created=1
 
   "$CONTAINER_CMD" start "$auth_name" >/dev/null
+  refresh_container_file "$auth_name" "$SCRIPT_DIR/agent.sh" "/usr/local/bin/agent.sh" "root:root" "755"
+  refresh_container_file "$auth_name" "$SCRIPT_DIR/config.toml" "/etc/agentctl/config.toml" "root:root" "644"
+  refresh_container_file "$auth_name" "$SCRIPT_DIR/local_models.json" "/etc/agentctl/local_models.json" "root:root" "644"
+  refresh_container_file "$auth_name" "$SCRIPT_DIR/config.toml" "/etc/codexctl/config.toml" "root:root" "644"
+  refresh_container_file "$auth_name" "$SCRIPT_DIR/local_models.json" "/etc/codexctl/local_models.json" "root:root" "644"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
   runtime_info="$("$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime info "$runtime")" || die "Failed to inspect runtime auth contract: $runtime"
   if ! printf '%s' "$runtime_info" | jq -e '.installed == true and (.capabilities.auth_login // false) and (.capabilities.auth_read // false)' >/dev/null; then
     die "Runtime does not support host-managed auth flow yet: $runtime"

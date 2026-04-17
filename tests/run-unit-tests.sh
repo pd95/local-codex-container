@@ -337,7 +337,11 @@ EOF
   chmod +x "$fake_keychain"
 
   KEYCHAIN_SCRIPT="$fake_keychain"
+  local refresh_log_file
+  refresh_log_file="$temp_dir/refresh.log"
   container_exists() { return 1; }
+  refresh_container_file() { printf 'file %s -> %s\n' "$2" "$3" >>"$refresh_log_file"; }
+  refresh_container_tree() { printf 'tree %s -> %s\n' "$2" "$3" >>"$refresh_log_file"; }
   CONTAINER_CMD=container
   container() {
     case "$1" in
@@ -372,6 +376,8 @@ EOF
 
   run_capture run_auth_flow agent-plain unit-auth-container
   assert_status 0
+  grep -Fq 'file /tmp/agentctl-phase1/agent.sh -> /usr/local/bin/agent.sh' "$refresh_log_file" || fail "Expected auth container refresh of agent.sh"
+  grep -Fq 'tree /tmp/agentctl-phase1/runtimes.d -> /etc/agentctl/runtimes.d' "$refresh_log_file" || fail "Expected auth container refresh of runtime manifests"
   grep -Fq 'bash /usr/local/bin/agent.sh runtime info codex' "$exec_log_file" || fail "Expected runtime info inspection before auth flow"
   grep -Fq 'bash -lc exec bash /usr/local/bin/agent.sh auth login codex' "$exec_log_file" || fail "Expected auth login via agent.sh"
   grep -Fq 'bash /usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
@@ -405,6 +411,8 @@ EOF
 set -euo pipefail
 source "$CODEXCTL"
 KEYCHAIN_SCRIPT="$fake_keychain"
+refresh_container_file() { :; }
+refresh_container_tree() { :; }
 container_exists() { return 1; }
 CONTAINER_CMD=container
 container() {
