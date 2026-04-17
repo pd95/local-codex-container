@@ -1667,10 +1667,13 @@ refresh_cmd() {
 
 run_agent_sh_in_container() {
   local name="$1"
+  local tty_mode="$2"
+  shift
   shift
   local was_running=0
   local started_for_command=0
   local status=0
+  local -a exec_cmd=("$CONTAINER_CMD" exec)
 
   if ! container_exists "$name"; then
     die "Container not found: $name"
@@ -1683,7 +1686,13 @@ run_agent_sh_in_container() {
     started_for_command=1
   fi
 
-  "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh "$@" || status=$?
+  case "$tty_mode" in
+    tty) exec_cmd+=(-i -t) ;;
+    stdin) exec_cmd+=(-i) ;;
+    *) die "Unknown exec mode: $tty_mode" ;;
+  esac
+
+  "${exec_cmd[@]}" "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh "$@" || status=$?
 
   if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null
@@ -1721,11 +1730,15 @@ runtime_cmd() {
 
   case "$subcommand" in
     list)
-      run_agent_sh_in_container "$name" runtime list
+      run_agent_sh_in_container "$name" tty runtime list
       ;;
-    info|capabilities|install|update|reset-config)
+    info|capabilities)
       [ -n "$runtime" ] || die "Missing runtime for $subcommand"
-      run_agent_sh_in_container "$name" runtime "$subcommand" "$runtime"
+      run_agent_sh_in_container "$name" tty runtime "$subcommand" "$runtime"
+      ;;
+    install|update|reset-config)
+      [ -n "$runtime" ] || die "Missing runtime for $subcommand"
+      run_agent_sh_in_container "$name" stdin runtime "$subcommand" "$runtime"
       ;;
     "")
       usage_runtime
@@ -1761,7 +1774,7 @@ use_cmd() {
     name="$(default_name "$DEFAULT_NAME_PREFIX")"
   fi
 
-  run_agent_sh_in_container "$name" preferred set "$runtime"
+  run_agent_sh_in_container "$name" stdin preferred set "$runtime"
   echo "Preferred runtime set to $runtime in $name" >&2
 }
 
@@ -1793,7 +1806,7 @@ system_manifest_cmd() {
     started_for_manifest=1
   fi
 
-  "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest
+  "$CONTAINER_CMD" exec -i -t "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest
 
   if [ "$started_for_manifest" -eq 1 ] && [ "$was_running" -eq 0 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null

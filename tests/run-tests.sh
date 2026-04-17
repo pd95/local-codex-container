@@ -253,9 +253,13 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   begin_test "refresh updates the runtime registry in an existing container"
   local name
   local workdir
+  local sentinel_file
+  local json_file
 
   name="$(unique_name runtime-refresh)"
   workdir="$(new_workdir)"
+  sentinel_file="$workdir/runtime-registry.ok"
+  json_file="$workdir/runtime-info.json"
   register_container_cleanup "$name"
 
   run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
@@ -265,10 +269,29 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   assert_status 0
   assert_contains "Refresh complete: $name"
 
-  run_capture "$AGENTCTL" runtime --name "$name" info codex
+  run_capture "$AGENTCTL" start --name "$name"
   assert_status 0
-  assert_matches '"runtime"[[:space:]]*:[[:space:]]*"codex"'
-  assert_matches '"install_method"[[:space:]]*:[[:space:]]*"npm-global"'
+
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- bash -lc '
+    bash /usr/local/bin/agent.sh runtime info codex \
+      | tee /workdir/runtime-info.json \
+      | jq -e '"'"'.runtime == "codex" and .install_method == "npm-global"'"'"' >/dev/null
+    echo runtime-registry-ok > /workdir/runtime-registry.ok
+  '
+  assert_status 0
+  if ! [ -f "$sentinel_file" ]; then
+    fail "Expected runtime registry sentinel file after refreshed container validation"
+  fi
+  if ! grep -Fxq "runtime-registry-ok" "$sentinel_file"; then
+    cat "$sentinel_file" >&2
+    fail "Expected runtime registry sentinel to report success"
+  fi
+  if ! [ -f "$json_file" ]; then
+    fail "Expected runtime info JSON file after refreshed container validation"
+  fi
+
+  run_capture "$AGENTCTL" stop --name "$name"
+  assert_status 0
 }
 
 main() {

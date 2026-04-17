@@ -12,6 +12,8 @@ TEST_START_ACTIVE=0
 TEST_STATUS=0
 RUN_STATUS=0
 RUN_OUTPUT=""
+RUN_STDERR=""
+RUN_HOST_OUTPUT=""
 RUN_LOG=""
 
 CLEANUP_CONTAINERS=""
@@ -93,13 +95,52 @@ run_capture() {
     RUN_STATUS=$?
   fi
   RUN_OUTPUT="$(cat "$log_file")"
+  RUN_STDERR=""
+  RUN_HOST_OUTPUT="$RUN_OUTPUT"
   RUN_LOG="$log_file"
+}
+
+run_capture_tty() {
+  local log_file
+  log_file="$(mktemp "${TMPDIR:-/tmp}/codexctl-test-log.XXXXXX")"
+
+  if command -v script >/dev/null 2>&1; then
+    if script -q "$log_file" "$@" >/dev/null 2>&1; then
+      RUN_STATUS=0
+    else
+      RUN_STATUS=$?
+    fi
+    RUN_OUTPUT="$(cat "$log_file")"
+  else
+    if "$@" >"$log_file" 2>&1; then
+      RUN_STATUS=0
+    else
+      RUN_STATUS=$?
+    fi
+    RUN_OUTPUT="$(cat "$log_file")"
+  fi
+
+  RUN_STDERR=""
+  RUN_HOST_OUTPUT="$RUN_OUTPUT"
+  RUN_LOG="$log_file"
+}
+
+print_run_diagnostics() {
+  if [ -n "$RUN_HOST_OUTPUT" ] && [ "$RUN_HOST_OUTPUT" != "$RUN_OUTPUT" ]; then
+    printf '[test] HOST OUTPUT:\n%s\n' "$RUN_HOST_OUTPUT" >&2
+  fi
+  if [ -n "$RUN_OUTPUT" ]; then
+    printf '%s\n' "$RUN_OUTPUT" >&2
+  fi
+  if [ -n "$RUN_STDERR" ]; then
+    printf '[test] STDERR:\n%s\n' "$RUN_STDERR" >&2
+  fi
 }
 
 assert_status() {
   local expected="$1"
   if [ "$RUN_STATUS" -ne "$expected" ]; then
-    printf '%s\n' "$RUN_OUTPUT" >&2
+    print_run_diagnostics
     fail "Expected exit status $expected but got $RUN_STATUS"
   fi
 }
@@ -107,7 +148,7 @@ assert_status() {
 assert_contains() {
   local needle="$1"
   if ! printf '%s' "$RUN_OUTPUT" | grep -Fq -- "$needle"; then
-    printf '%s\n' "$RUN_OUTPUT" >&2
+    print_run_diagnostics
     fail "Expected output to contain: $needle"
   fi
 }
@@ -115,7 +156,7 @@ assert_contains() {
 assert_not_contains() {
   local needle="$1"
   if printf '%s' "$RUN_OUTPUT" | grep -Fq -- "$needle"; then
-    printf '%s\n' "$RUN_OUTPUT" >&2
+    print_run_diagnostics
     fail "Did not expect output to contain: $needle"
   fi
 }
@@ -123,7 +164,7 @@ assert_not_contains() {
 assert_matches() {
   local pattern="$1"
   if ! printf '%s' "$RUN_OUTPUT" | grep -Eq -- "$pattern"; then
-    printf '%s\n' "$RUN_OUTPUT" >&2
+    print_run_diagnostics
     fail "Expected output to match regex: $pattern"
   fi
 }
@@ -160,10 +201,124 @@ begin_test() {
   log "$1"
   RUN_STATUS=0
   RUN_OUTPUT=""
+  RUN_STDERR=""
+  RUN_HOST_OUTPUT=""
   if [ -n "$RUN_LOG" ] && [ -f "$RUN_LOG" ]; then
     rm -f "$RUN_LOG" >/dev/null 2>&1 || true
   fi
   RUN_LOG=""
+}
+
+run_capture_agentctl_exec_output() {
+  local name="$1"
+  local workdir="$2"
+  local command="$3"
+  local suffix="$$-${RANDOM:-0}-$(date -u +%Y%m%d%H%M%S)"
+  local stdout_file="$workdir/.agentctl-test-stdout-$suffix"
+  local stderr_file="$workdir/.agentctl-test-stderr-$suffix"
+  local status_file="$workdir/.agentctl-test-status-$suffix"
+  local stdout_name stderr_name status_name
+  local exec_output=""
+  local exec_status=0
+  local debug=""
+
+  stdout_name="$(basename "$stdout_file")"
+  stderr_name="$(basename "$stderr_file")"
+  status_name="$(basename "$status_file")"
+
+  run_capture "$AGENTCTL" exec --name "$name" -- bash -lc "$command > /workdir/$stdout_name 2> /workdir/$stderr_name; printf '%s' \$? > /workdir/$status_name"
+  exec_status="$RUN_STATUS"
+  exec_output="$RUN_OUTPUT"
+
+  RUN_OUTPUT=""
+  RUN_STDERR=""
+  RUN_HOST_OUTPUT="$exec_output"
+  RUN_STATUS="$exec_status"
+
+  if [ -f "$stdout_file" ]; then
+    RUN_OUTPUT="$(cat "$stdout_file")"
+    rm -f "$stdout_file" >/dev/null 2>&1 || true
+  else
+    RUN_OUTPUT="$exec_output"
+    debug="${debug}missing stdout capture file: $stdout_file"$'\n'
+  fi
+
+  if [ -f "$stderr_file" ]; then
+    RUN_STDERR="$(cat "$stderr_file")"
+    rm -f "$stderr_file" >/dev/null 2>&1 || true
+  else
+    debug="${debug}missing stderr capture file: $stderr_file"$'\n'
+  fi
+
+  if [ -f "$status_file" ]; then
+    RUN_STATUS="$(cat "$status_file")"
+    rm -f "$status_file" >/dev/null 2>&1 || true
+  else
+    debug="${debug}missing status capture file: $status_file"$'\n'
+  fi
+
+  if [ -z "$RUN_OUTPUT" ]; then
+    debug="${debug}captured stdout is empty"$'\n'
+  fi
+  if [ -n "$debug" ]; then
+    RUN_STDERR="${RUN_STDERR}${RUN_STDERR:+$'\n'}$debug"
+  fi
+}
+
+run_capture_container_exec_output() {
+  local name="$1"
+  local workdir="$2"
+  local command="$3"
+  local suffix="$$-${RANDOM:-0}-$(date -u +%Y%m%d%H%M%S)"
+  local stdout_file="$workdir/.container-test-stdout-$suffix"
+  local stderr_file="$workdir/.container-test-stderr-$suffix"
+  local status_file="$workdir/.container-test-status-$suffix"
+  local stdout_name stderr_name status_name
+  local exec_output=""
+  local exec_status=0
+  local debug=""
+
+  stdout_name="$(basename "$stdout_file")"
+  stderr_name="$(basename "$stderr_file")"
+  status_name="$(basename "$status_file")"
+
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- bash -lc "$command > /workdir/$stdout_name 2> /workdir/$stderr_name; printf '%s' \$? > /workdir/$status_name"
+  exec_status="$RUN_STATUS"
+  exec_output="$RUN_OUTPUT"
+
+  RUN_OUTPUT=""
+  RUN_STDERR=""
+  RUN_HOST_OUTPUT="$exec_output"
+  RUN_STATUS="$exec_status"
+
+  if [ -f "$stdout_file" ]; then
+    RUN_OUTPUT="$(cat "$stdout_file")"
+    rm -f "$stdout_file" >/dev/null 2>&1 || true
+  else
+    RUN_OUTPUT="$exec_output"
+    debug="${debug}missing stdout capture file: $stdout_file"$'\n'
+  fi
+
+  if [ -f "$stderr_file" ]; then
+    RUN_STDERR="$(cat "$stderr_file")"
+    rm -f "$stderr_file" >/dev/null 2>&1 || true
+  else
+    debug="${debug}missing stderr capture file: $stderr_file"$'\n'
+  fi
+
+  if [ -f "$status_file" ]; then
+    RUN_STATUS="$(cat "$status_file")"
+    rm -f "$status_file" >/dev/null 2>&1 || true
+  else
+    debug="${debug}missing status capture file: $status_file"$'\n'
+  fi
+
+  if [ -z "$RUN_OUTPUT" ]; then
+    debug="${debug}captured stdout is empty"$'\n'
+  fi
+  if [ -n "$debug" ]; then
+    RUN_STDERR="${RUN_STDERR}${RUN_STDERR:+$'\n'}$debug"
+  fi
 }
 
 test_matches_filter() {
