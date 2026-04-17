@@ -386,6 +386,109 @@ test_feature_office_install_works_on_agent_python() {
   assert_status 0
 }
 
+test_bootstrap_works_on_existing_alpine_container() {
+  begin_test "bootstrap works on an existing Alpine container"
+  local name
+
+  name="$(unique_name bootstrap-alpine)"
+  register_raw_container_cleanup "$name"
+
+  run_capture "$CONTAINER_CMD" create --name "$name" docker.io/library/alpine:latest sleep infinity
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" start "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" bootstrap --name "$name"
+  assert_status 0
+  assert_contains "Bootstrap complete: $name"
+
+  run_capture "$AGENTCTL" runtime --name "$name" info codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global"' >/dev/null || fail "Expected runtime info JSON for codex after bootstrap, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" runtime --name "$name" install codex
+  assert_status 0
+
+  run_capture "$AGENTCTL" runtime --name "$name" list
+  assert_status 0
+  assert_contains "codex"
+
+  run_capture "$AGENTCTL" feature --name "$name" info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .capabilities.install == true and .installed == false' >/dev/null || fail "Expected feature info JSON for office after bootstrap, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+  assert_contains "Refresh complete: $name"
+
+  run_capture "$CONTAINER_CMD" exec "$name" sh -lc 'test -f /etc/agentctl/bootstrap.json && test -x /usr/local/bin/agent.sh && test -f /etc/agentctl/runtimes.d/codex.json && test -f /etc/agentctl/features.d/office.json'
+  assert_status 0
+}
+
+test_bootstrap_can_create_and_bootstrap_new_alpine_container() {
+  begin_test "bootstrap can create and bootstrap a new Alpine container"
+  local name
+  local workdir
+
+  name="$(unique_name bootstrap-create)"
+  workdir="$(new_workdir)"
+  register_raw_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" bootstrap --name "$name" --image docker.io/library/alpine:latest --workdir "$workdir"
+  assert_status 0
+  assert_contains "Bootstrap container ready: $name"
+  assert_contains "Bootstrap complete: $name"
+
+  if ! container_exists "$name"; then
+    fail "Expected bootstrap-created container to exist: $name"
+  fi
+  if container_running "$name"; then
+    fail "Expected bootstrap-created container to be stopped after bootstrap: $name"
+  fi
+
+  run_capture "$AGENTCTL" runtime --name "$name" info codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global"' >/dev/null || fail "Expected runtime info JSON for codex after create+bootstrap, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" feature --name "$name" info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .capabilities.install == true' >/dev/null || fail "Expected feature info JSON for office after create+bootstrap, got: $RUN_OUTPUT"
+}
+
+test_bootstrap_works_on_existing_debian_container() {
+  begin_test "bootstrap works on an existing Debian container"
+  local name
+
+  name="$(unique_name bootstrap-debian)"
+  register_raw_container_cleanup "$name"
+
+  run_capture "$CONTAINER_CMD" create --name "$name" docker.io/library/debian:stable-slim sleep infinity
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" start "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" bootstrap --name "$name"
+  assert_status 0
+  assert_contains "Bootstrap complete: $name"
+
+  run_capture "$AGENTCTL" runtime --name "$name" info codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global"' >/dev/null || fail "Expected runtime info JSON for codex after Debian bootstrap, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" feature --name "$name" info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .capabilities.install == true and .installed == false' >/dev/null || fail "Expected feature info JSON for office after Debian bootstrap, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+  assert_contains "Refresh complete: $name"
+
+  run_capture "$CONTAINER_CMD" exec "$name" sh -lc 'test -f /etc/agentctl/bootstrap.json && test -x /usr/local/bin/agent.sh && test -f /etc/agentctl/runtimes.d/codex.json && test -f /etc/agentctl/features.d/office.json'
+  assert_status 0
+}
+
 main() {
   require_host_prereqs
 
@@ -412,6 +515,9 @@ main() {
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
   run_selected_test test_runtime_info_claude_works_after_refresh_on_stopped_container "runtime info claude works after refresh when the container is stopped" smoke
   run_selected_test test_feature_office_install_works_on_agent_python "feature install office works on agent-python" full
+  run_selected_test test_bootstrap_works_on_existing_alpine_container "bootstrap works on an existing Alpine container" full
+  run_selected_test test_bootstrap_can_create_and_bootstrap_new_alpine_container "bootstrap can create and bootstrap a new Alpine container" full
+  run_selected_test test_bootstrap_works_on_existing_debian_container "bootstrap works on an existing Debian container" full
   assert_selected_tests_ran
 
   log "PASS: all host integration tests completed"
