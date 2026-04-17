@@ -173,6 +173,7 @@ agentctl run --cmd bash
 - `agentctl runtime reset-config claude` restores a default `~/.claude/settings.json` with `USE_BUILTIN_RIPGREP=0`.
 - refreshed and rebuilt containers now ship `/etc/profile.d/agentctl-path.sh`, so bash login shells prepend `~/.local/bin` to `PATH` and native Claude installs are available as `claude` without manual shell edits.
 - `agentctl use codex` updates the container-local preferred runtime without changing the default image selection used by `agentctl run`.
+- `agentctl run` is now runtime-neutral at the host layer. Codex still starts with its default `--cd /workdir` behavior, but that default now lives in the Codex runtime adapter instead of being forced on every runtime.
 - `--cpu` and `--mem` on `agentctl run` only apply when creating a new container. If the named container already exists, `agentctl run` fails fast and tells you to use `agentctl refresh` instead of silently ignoring the resource request.
 - `agentctl refresh` is the normal non-destructive update path for an existing named container. It updates `agent.sh`, the agentctl-managed default config files, runtime manifests, and runtime adapters in place, and preserves the container's running or stopped state.
 - `agentctl refresh` does not recreate the container, export backup images, or touch user-installed packages. Use `agentctl upgrade` only for the heavier recreate-and-restore flow.
@@ -257,7 +258,7 @@ Notes:
 - After a run, if the container refresh time is newer (and present), the updated auth is saved back into Keychain.
 - After `agentctl auth`, exit any running `--openai` sessions and re-run `agentctl run --openai` to pick up the new token.
 - `agentctl auth --runtime <runtime>` only works for runtimes whose manifest declares `auth_login` and `auth_read` capability support plus at least one host-storable `auth_format`. In this branch, both `codex` and `claude` meet that contract.
-- Claude auth on Linux is synchronized through `~/.claude/.credentials.json`. When present, the legacy companion state file `~/.claude.json` is included in the host-storable blob and restored on write, but the credential boundary remains the `.credentials.json` file.
+- Claude auth on Linux is synchronized through `~/.claude/.credentials.json`. The host-storable Claude blob now preserves the credential file plus the minimal proven replay state from `~/.claude.json`: `oauthAccount` and `hasCompletedOnboarding`. That is enough to replay auth into a fresh Claude container in current testing, while keeping the credential boundary at `.credentials.json`.
 - host-side Keychain storage is now keyed per runtime and auth format. Codex keeps the legacy `codex-OpenAI-auth` slot so existing setups continue to work unchanged.
 
 Security notes:
@@ -298,7 +299,7 @@ Further the build process copies `config.toml` and `local_models.json` into the 
 
 Each image also writes `/etc/codexctl/image.md` during build. That file describes the image name, build time, workspace conventions, and key built-in tools/toolchains. It intentionally lives outside `/home/coder/.codex`, so `agentctl refresh` does not treat it as user state to back up and restore.
 
-The image build also creates `~/.codex/AGENTS.md` as a symlink to `/etc/codexctl/image.md`. This follows the official Codex `AGENTS.md` discovery flow for global guidance while keeping the source metadata image-owned instead of backed up as mutable user state. `agentctl run` still starts Codex with `--cd /workdir` so the working root is explicit.
+The image build also creates `~/.codex/AGENTS.md` as a symlink to `/etc/codexctl/image.md`. This follows the official Codex `AGENTS.md` discovery flow for global guidance while keeping the source metadata image-owned instead of backed up as mutable user state. Codex still starts with `--cd /workdir`, but that default is now injected by the Codex runtime adapter rather than the generic `agentctl run` host wrapper.
 
 The image-specific `image.md` files describe the intended toolchain focus:
 

@@ -52,6 +52,17 @@ claude_auth_payload_valid() {
   ' >/dev/null 2>&1
 }
 
+claude_export_home_state() {
+  [ -f "$CLAUDE_HOME_STATE_FILE" ] || return 0
+  jq -c '
+    {
+      oauthAccount: (.oauthAccount // null),
+      hasCompletedOnboarding: (.hasCompletedOnboarding // null)
+    }
+    | with_entries(select(.value != null))
+  ' "$CLAUDE_HOME_STATE_FILE" 2>/dev/null
+}
+
 agent_runtime_run() {
   local runtime="$1"
   shift
@@ -100,8 +111,8 @@ agent_runtime_auth_read() {
   [ "$key" = "claude_ai_oauth_json" ] || die "unsupported auth format: $key"
   [ -f "$CLAUDE_CREDENTIALS_FILE" ] || exit 1
   claude_auth_payload_valid <"$CLAUDE_CREDENTIALS_FILE" || die "invalid auth state: $CLAUDE_CREDENTIALS_FILE"
-  if [ -f "$CLAUDE_HOME_STATE_FILE" ] && jq -e 'type == "object"' "$CLAUDE_HOME_STATE_FILE" >/dev/null 2>&1; then
-    jq -c --slurpfile home_state "$CLAUDE_HOME_STATE_FILE" '. + {claudeCodeState: $home_state[0]}' "$CLAUDE_CREDENTIALS_FILE"
+  if home_state_json="$(claude_export_home_state)" && [ -n "$home_state_json" ] && [ "$home_state_json" != "{}" ]; then
+    jq -c --argjson home_state "$home_state_json" '. + {claudeCodeState: $home_state}' "$CLAUDE_CREDENTIALS_FILE"
     return 0
   fi
   cat "$CLAUDE_CREDENTIALS_FILE"
@@ -123,7 +134,24 @@ agent_runtime_auth_write() {
   printf '%s' "$value" | jq -c 'del(.claudeCodeState)' >"$CLAUDE_CREDENTIALS_FILE"
   chmod 600 "$CLAUDE_CREDENTIALS_FILE"
   if printf '%s' "$value" | jq -e '.claudeCodeState | type == "object"' >/dev/null 2>&1; then
-    printf '%s' "$value" | jq -c '.claudeCodeState' >"$CLAUDE_HOME_STATE_FILE"
+    if [ -f "$CLAUDE_HOME_STATE_FILE" ] && jq -e 'type == "object"' "$CLAUDE_HOME_STATE_FILE" >/dev/null 2>&1; then
+      printf '%s' "$value" | jq -c --slurpfile current "$CLAUDE_HOME_STATE_FILE" '
+        ($current[0] // {}) as $base
+        | .claudeCodeState as $incoming
+        | $base
+        | .oauthAccount = ($incoming.oauthAccount // .oauthAccount)
+        | .hasCompletedOnboarding = ($incoming.hasCompletedOnboarding // .hasCompletedOnboarding)
+      ' >"$CLAUDE_HOME_STATE_FILE"
+    else
+      printf '%s' "$value" | jq -c '
+        .claudeCodeState
+        | {
+            oauthAccount: (.oauthAccount // null),
+            hasCompletedOnboarding: (.hasCompletedOnboarding // null)
+          }
+        | with_entries(select(.value != null))
+      ' >"$CLAUDE_HOME_STATE_FILE"
+    fi
     chmod 600 "$CLAUDE_HOME_STATE_FILE"
   fi
 }

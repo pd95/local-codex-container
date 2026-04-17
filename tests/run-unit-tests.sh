@@ -71,7 +71,10 @@ test_run_profile_wires_selected_profile() {
   [ "$captured_pre_exec" = "local_model_pre_exec" ] || fail "Expected local_model_pre_exec, got: $captured_pre_exec"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_RUN_MODE=' || fail "Expected agent.sh launch wrapper, got: $captured_cmd"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_DEFAULT_PROFILE=' || fail "Expected profile to be passed to agent.sh, got: $captured_cmd"
-  printf '%s\n' "$captured_cmd" | grep -Fq '/usr/local/bin/agent.sh run --cd /workdir' || fail "Expected agent.sh run launch path, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq '/usr/local/bin/agent.sh run' || fail "Expected agent.sh run launch path, got: $captured_cmd"
+  if printf '%s\n' "$captured_cmd" | grep -Fq -- '--cd /workdir'; then
+    fail "Did not expect codex-specific --cd flag in generic host launch path: $captured_cmd"
+  fi
 }
 
 test_run_help_reports_profile_default() {
@@ -307,6 +310,69 @@ test_agent_sh_claude_runtime_reset_config_restores_settings() {
   jq -er '.env.USE_BUILTIN_RIPGREP == "0"' "$temp_home/home/.claude/settings.json" >/dev/null || fail "Expected Claude settings reset to default ripgrep behavior"
 }
 
+test_agent_sh_codex_run_defaults_to_workdir_cd() {
+  begin_test "agent.sh codex run injects --cd /workdir by default"
+
+  local temp_home
+  local fake_bin
+  local run_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  run_log="$temp_home/codex-run.log"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/codex" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$run_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/codex"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" run
+  assert_status 0
+  grep -Fq -- '--cd /workdir' "$run_log" || fail "Expected codex run to include --cd /workdir"
+}
+
+test_agent_sh_claude_run_avoids_codex_specific_cd_flag() {
+  begin_test "agent.sh claude run does not inject Codex-specific cd flag"
+
+  local temp_home
+  local fake_bin
+  local run_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  run_log="$temp_home/claude-run.log"
+  mkdir -p "$fake_bin" "$temp_home/config/agentctl"
+  printf '%s\n' claude >"$temp_home/config/agentctl/preferred-runtime"
+
+  cat >"$fake_bin/claude" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$run_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/claude"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" run
+  assert_status 0
+  if grep -Fq -- '--cd /workdir' "$run_log"; then
+    fail "Did not expect Claude run to receive --cd /workdir"
+  fi
+}
+
 test_agent_sh_rejects_unknown_runtime() {
   begin_test "agent.sh rejects unknown runtimes predictably"
 
@@ -393,18 +459,18 @@ test_agent_sh_auth_write_rejects_invalid_codex_auth() {
 }
 
 test_agent_sh_claude_auth_read_includes_optional_home_state() {
-  begin_test "agent.sh auth read returns claude credentials and optional home state"
+  begin_test "agent.sh auth read returns claude credentials and minimal home state"
 
   local temp_home
   temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
   register_dir_cleanup "$temp_home"
   mkdir -p "$temp_home/home/.claude"
   printf '%s' '{"claudeAiOauth":{"accessToken":"access-token","refreshToken":"refresh-token","expiresAt":1776462236852}}' >"$temp_home/home/.claude/.credentials.json"
-  printf '%s' '{"installMethod":"native","userID":"abc123"}' >"$temp_home/home/.claude.json"
+  printf '%s' '{"installMethod":"native","userID":"abc123","oauthAccount":{"emailAddress":"user@example.com"},"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
 
   run_agent_sh_capture "$temp_home" auth read claude claude_ai_oauth_json
   assert_status 0
-  printf '%s' "$RUN_OUTPUT" | jq -er '.claudeAiOauth.refreshToken == "refresh-token" and .claudeCodeState.installMethod == "native" and .claudeCodeState.userID == "abc123"' >/dev/null || fail "Expected Claude auth payload with optional home state, got: $RUN_OUTPUT"
+  printf '%s' "$RUN_OUTPUT" | jq -er '.claudeAiOauth.refreshToken == "refresh-token" and .claudeCodeState.oauthAccount.emailAddress == "user@example.com" and .claudeCodeState.hasCompletedOnboarding == true and (.claudeCodeState | has("installMethod") | not) and (.claudeCodeState | has("userID") | not)' >/dev/null || fail "Expected Claude auth payload with minimal home state, got: $RUN_OUTPUT"
 }
 
 test_agent_sh_claude_auth_read_rejects_invalid_credentials() {
@@ -422,13 +488,13 @@ test_agent_sh_claude_auth_read_rejects_invalid_credentials() {
 }
 
 test_agent_sh_claude_auth_write_restores_credentials_and_home_state() {
-  begin_test "agent.sh auth write restores claude credentials and optional home state"
+  begin_test "agent.sh auth write restores claude credentials and minimal home state"
 
   local temp_home
   local payload
   temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
   register_dir_cleanup "$temp_home"
-  payload='{"claudeAiOauth":{"accessToken":"access-token","refreshToken":"refresh-token","expiresAt":1776462236852},"claudeCodeState":{"installMethod":"native","userID":"abc123"}}'
+  payload='{"claudeAiOauth":{"accessToken":"access-token","refreshToken":"refresh-token","expiresAt":1776462236852},"claudeCodeState":{"oauthAccount":{"emailAddress":"user@example.com"},"hasCompletedOnboarding":true}}'
 
   run_capture env \
     HOME="$temp_home/home" \
@@ -439,7 +505,7 @@ test_agent_sh_claude_auth_write_restores_credentials_and_home_state() {
     "$TEST_ROOT/agent.sh" auth write claude claude_ai_oauth_json "$payload"
   assert_status 0
   jq -er '(.claudeAiOauth.refreshToken == "refresh-token") and (has("claudeCodeState") | not)' "$temp_home/home/.claude/.credentials.json" >/dev/null || fail "Expected Claude credentials file to contain only auth payload"
-  jq -er '.installMethod == "native" and .userID == "abc123"' "$temp_home/home/.claude.json" >/dev/null || fail "Expected Claude home state file to be restored"
+  jq -er '.oauthAccount.emailAddress == "user@example.com" and .hasCompletedOnboarding == true and (has("installMethod") | not) and (has("userID") | not)' "$temp_home/home/.claude.json" >/dev/null || fail "Expected Claude home state file to be restored minimally"
 }
 
 test_agent_sh_claude_auth_write_rejects_invalid_payload() {
@@ -1552,6 +1618,8 @@ main() {
   test_agent_sh_claude_runtime_install_runs_native_installer
   test_agent_sh_claude_runtime_update_calls_claude_update
   test_agent_sh_claude_runtime_reset_config_restores_settings
+  test_agent_sh_codex_run_defaults_to_workdir_cd
+  test_agent_sh_claude_run_avoids_codex_specific_cd_flag
   test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
   test_agent_sh_preferred_set_rejects_uninstalled_runtime

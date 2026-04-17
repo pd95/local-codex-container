@@ -49,6 +49,16 @@ has_explicit_profile() {
   return 1
 }
 
+has_explicit_codex_cd() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --cd|--cd=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 ensure_user_dirs() {
   mkdir -p "$USER_CONFIG_DIR" "$CODEX_HOME_DIR"
 }

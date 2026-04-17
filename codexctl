@@ -2113,13 +2113,13 @@ run_mode() {
   local pre_exec=""
   local post_exec=""
   local runtime_mode="local-model"
-  local cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run --cd /workdir" sh "$runtime_mode" "$profile")
+  local cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile")
 
   if [ "$openai" -eq 1 ]; then
     runtime_mode="openai"
     pre_exec="openai_pre_exec"
     post_exec="openai_post_exec"
-    cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run --cd /workdir" sh "$runtime_mode" "$profile")
+    cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile")
     if [ "$auth" -eq 1 ] || ! ensure_keychain; then
       run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
     fi
