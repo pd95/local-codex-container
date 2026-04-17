@@ -495,6 +495,7 @@ Usage: $CLI_NAME <command> [options]
 Commands:
   build      Build agent images
   run        Create/start a container for the current directory
+  bootstrap  Bootstrap agentctl into an existing compatible container
   runtime    Manage coding runtimes inside an existing container
   feature    Manage installable feature packs inside an existing container
   use        Select the preferred runtime for an existing container
@@ -562,6 +563,19 @@ Options:
   --cmd ...       Run a custom command (must be last; cannot combine with --shell)
   --cpu NUM       CPU cores for container
   --mem SIZE      Memory limit (e.g. 8G)
+EOF
+}
+
+usage_bootstrap() {
+  cat <<EOF
+Usage: $CLI_NAME bootstrap [options]
+
+Options:
+  --name NAME  Existing container name to bootstrap (default: agent-<dir>)
+
+The first bootstrap slice supports existing Alpine-based containers only.
+It installs the current managed control surface into the container so that
+\`runtime\`, \`feature\`, and \`refresh\` flows can work there afterward.
 EOF
 }
 
@@ -1889,6 +1903,119 @@ refresh_container_tree() {
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "chown -R $owner '$target' && find '$target' -type d -exec chmod $dir_mode {} + && find '$target' -type f -exec chmod $file_mode {} +"
 }
 
+bootstrap_container_alpine() {
+  local name="$1"
+  local image_md_file
+
+  image_md_file="$(mktemp "${TMPDIR:-/tmp}/agentctl-bootstrap-image.XXXXXX")"
+  cat >"$image_md_file" <<'EOF'
+You are running inside a bootstrapped `agentctl` container.
+
+Environment:
+- bootstrapped onto an existing compatible Linux container
+- running as the non-root user `coder`
+- shared host workspace at `/workdir`
+- package manager compatibility: Alpine `apk` (first bootstrap slice)
+
+Bootstrap metadata:
+- image: `bootstrapped-container`
+- provenance: `agentctl bootstrap`
+
+Managed control surface:
+- `/usr/local/bin/agent.sh`
+- `/etc/agentctl`
+- runtime manifests/adapters
+- feature manifests/adapters
+
+Use this container like an `agentctl`-managed environment after bootstrap.
+EOF
+
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc '
+    set -e
+    apk add --no-cache bash zsh npm file curl git ripgrep jq util-linux bubblewrap
+    addgroup -S coder >/dev/null 2>&1 || true
+    if ! id -u coder >/dev/null 2>&1; then
+      adduser -S -G coder -h /home/coder -s /bin/bash coder >/dev/null
+    fi
+    mkdir -p /home/coder/.codex /workdir /etc/codexctl /etc/claudectl /etc/agentctl /var/lib/agentctl
+    chown -R coder:coder /home/coder /workdir
+  '
+
+  refresh_container_file "$name" "$SCRIPT_DIR/agent.sh" "/usr/local/bin/agent.sh" "root:root" "755"
+  refresh_container_file "$name" "$SCRIPT_DIR/config.toml" "/home/coder/.codex/config.toml" "coder:coder" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/local_models.json" "/home/coder/.codex/local_models.json" "coder:coder" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/config.toml" "/etc/agentctl/config.toml" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/local_models.json" "/etc/agentctl/local_models.json" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/config.toml" "/etc/codexctl/config.toml" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/local_models.json" "/etc/codexctl/local_models.json" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/claude-settings.json" "/etc/claudectl/settings.json" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/agentctl-path.sh" "/etc/profile.d/agentctl-path.sh" "root:root" "644"
+  refresh_container_tree "$name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features" "/usr/local/lib/agentctl/features" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features.d" "/etc/agentctl/features.d" "root:root" "644" "755"
+  refresh_container_file "$name" "$image_md_file" "/etc/codexctl/image.md" "root:root" "644"
+  refresh_container_file "$name" "$image_md_file" "/etc/agentctl/image.md" "root:root" "644"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc '
+    set -e
+    printf "%s\n" codex >/etc/agentctl/preferred-runtime
+    ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md
+    chown -h coder:coder /home/coder/.codex/AGENTS.md
+    cat >/etc/agentctl/bootstrap.json <<JSON
+{"schema_version":1,"bootstrapped":true,"bootstrap_package_manager":"apk","bootstrap_mode":"existing-container"}
+JSON
+  '
+  rm -f "$image_md_file"
+}
+
+bootstrap_cmd() {
+  local name=""
+  local was_running=0
+  local started_for_bootstrap=0
+  local package_manager=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_bootstrap; return 0 ;;
+      *) die "Unknown option for bootstrap: $1" ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_bootstrap=1
+  fi
+
+  package_manager="$("$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'if command -v apk >/dev/null 2>&1; then echo apk; else echo unsupported; fi')"
+  case "$package_manager" in
+    apk)
+      bootstrap_container_alpine "$name"
+      ;;
+    *)
+      if [ "$started_for_bootstrap" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+        "$CONTAINER_CMD" stop "$name" >/dev/null
+      fi
+      die "Unsupported bootstrap container base for first slice: $name (need Alpine/apk)"
+      ;;
+  esac
+
+  if [ "$started_for_bootstrap" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+  echo "Bootstrap complete: $name" >&2
+}
+
 refresh_cmd() {
   local name=""
   local was_running=0
@@ -3062,6 +3189,7 @@ cmd="${1:-}"
 case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
+  bootstrap) shift; bootstrap_cmd "$@" ;;
   runtime) shift; runtime_cmd "$@" ;;
   feature) shift; feature_cmd "$@" ;;
   use) shift; use_cmd "$@" ;;

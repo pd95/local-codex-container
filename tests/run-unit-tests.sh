@@ -314,6 +314,104 @@ test_feature_cmd_installs_via_root_helper() {
   printf '%s' "$helper_log" | grep -Fq $'root:unit-feature-container:feature:install' || fail "Expected root feature helper call, got: $helper_log"
 }
 
+test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
+  begin_test "bootstrap_cmd bootstraps an Alpine container and restores stopped state"
+
+  load_codexctl_functions
+
+  local start_calls=0
+  local stop_calls=0
+  local exec_log=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-bootstrap-container\n'; }
+  container_exists() { [ "$1" = "unit-bootstrap-container" ]; }
+  container_running() { return 1; }
+  refresh_container_file() { exec_log="${exec_log}file:$3"$'\n'; }
+  refresh_container_tree() { exec_log="${exec_log}tree:$3"$'\n'; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      exec)
+        shift
+        if [ "${1:-}" = "-u" ]; then
+          shift 2
+        fi
+        if [ "${1:-}" = "unit-bootstrap-container" ]; then
+          shift
+        fi
+        exec_log="${exec_log}exec:$(printf '%s ' "$@")"$'\n'
+        if [ "$*" = "sh -lc if command -v apk >/dev/null 2>&1; then echo apk; else echo unsupported; fi" ]; then
+          printf 'apk\n'
+        fi
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture bootstrap_cmd --name unit-bootstrap-container
+  assert_status 0
+  assert_contains "Bootstrap complete: unit-bootstrap-container"
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+  printf '%s\n' "$exec_log" | grep -Fq "apk add --no-cache bash zsh npm file curl git ripgrep jq util-linux bubblewrap" || fail "Expected root bootstrap install commands"
+  printf '%s\n' "$exec_log" | grep -Fq "file:/usr/local/bin/agent.sh" || fail "Expected bootstrap to install agent.sh"
+  printf '%s\n' "$exec_log" | grep -Fq "tree:/etc/agentctl/runtimes.d" || fail "Expected bootstrap to install runtime manifests"
+  printf '%s\n' "$exec_log" | grep -Fq "tree:/etc/agentctl/features.d" || fail "Expected bootstrap to install feature manifests"
+  printf '%s\n' "$exec_log" | grep -Fq "file:/etc/agentctl/image.md" || fail "Expected bootstrap to install image metadata"
+}
+
+test_bootstrap_cmd_rejects_unsupported_base() {
+  begin_test "bootstrap_cmd rejects unsupported container bases"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-bootstrap-container\n'; }
+  container_exists() { [ "$1" = "unit-bootstrap-container" ]; }
+  container_running() { return 0; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start|stop)
+        return 0
+        ;;
+      exec)
+        shift
+        if [ "${1:-}" = "-u" ]; then
+          shift 2
+        fi
+        if [ "${1:-}" = "unit-bootstrap-container" ]; then
+          shift
+        fi
+        if [ "$*" = "sh -lc if command -v apk >/dev/null 2>&1; then echo apk; else echo unsupported; fi" ]; then
+          printf 'unsupported\n'
+          return 0
+        fi
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  capture_bootstrap_unsupported() {
+    ( bootstrap_cmd --name unit-bootstrap-container )
+  }
+
+  run_capture capture_bootstrap_unsupported
+  assert_status 1
+  assert_contains "Unsupported bootstrap container base for first slice"
+}
+
 test_run_help_reports_profile_default() {
   begin_test "run help reports the actual default profile"
 
@@ -336,6 +434,15 @@ test_refresh_help_reports_new_command() {
   run_capture "$AGENTCTL" refresh --help
   assert_status 0
   assert_contains "Usage: agentctl refresh [options]"
+}
+
+test_bootstrap_help_reports_new_command() {
+  begin_test "bootstrap help is available via the public CLI"
+
+  run_capture "$AGENTCTL" bootstrap --help
+  assert_status 0
+  assert_contains "Usage: agentctl bootstrap [options]"
+  assert_contains "existing Alpine-based containers only"
 }
 
 test_system_manifest_help_reports_new_command() {
@@ -1976,8 +2083,11 @@ main() {
   test_sync_runtime_auth_to_container_if_available_skips_missing_keychain
   test_auth_cmd_warns_for_legacy_office_image
   test_feature_cmd_installs_via_root_helper
+  test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state
+  test_bootstrap_cmd_rejects_unsupported_base
   test_agentctl_wrapper_usage_banner
   test_refresh_help_reports_new_command
+  test_bootstrap_help_reports_new_command
   test_system_manifest_help_reports_new_command
   test_runtime_help_reports_new_command
   test_feature_help_reports_new_command
