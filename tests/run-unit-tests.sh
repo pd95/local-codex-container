@@ -128,6 +128,19 @@ test_agent_sh_runtime_info_reports_registry_metadata() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global" and .default_config_dir == "/etc/codexctl" and (.auth_formats | index("json_refresh_token") != null)' >/dev/null || fail "Expected runtime info JSON for codex, got: $RUN_OUTPUT"
 }
 
+test_agent_sh_runtime_list_reports_installed_runtimes_only() {
+  begin_test "agent.sh runtime list reports installed runtimes only"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" runtime list
+  assert_status 0
+  assert_contains "codex"
+  assert_not_contains "claude"
+}
+
 test_agent_sh_runtime_capabilities_reports_manifest_commands() {
   begin_test "agent.sh runtime capabilities reports manifest-backed commands"
 
@@ -189,6 +202,18 @@ test_agent_sh_preferred_round_trip() {
   run_agent_sh_capture "$temp_home" preferred get
   assert_status 0
   assert_contains "codex"
+}
+
+test_agent_sh_preferred_set_rejects_uninstalled_runtime() {
+  begin_test "agent.sh preferred set rejects uninstalled runtimes"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" preferred set claude
+  assert_status 1
+  assert_contains "runtime not installed: claude"
 }
 
 test_container_auth_info_uses_agent_sh_auth_read() {
@@ -615,6 +640,36 @@ test_refresh_updates_managed_files_without_recreate() {
   printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/runtimes.d" || fail "Expected refresh to update runtime registry"
 }
 
+test_refresh_container_file_streams_source_via_stdin() {
+  begin_test "refresh_container_file uses interactive exec for stdin streaming"
+
+  load_codexctl_functions
+
+  local source_file
+  local exec_log=""
+
+  source_file="$(mktemp "${TMPDIR:-/tmp}/codexctl-refresh-file.XXXXXX")"
+  register_dir_cleanup "$source_file"
+  printf 'hello-refresh\n' >"$source_file"
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      exec)
+        shift
+        exec_log="${exec_log}$(printf '%s\n' "$*")"
+        cat >/dev/null || true
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  refresh_container_file unit-test-container "$source_file" /usr/local/bin/agent.sh root:root 755
+  printf '%s\n' "$exec_log" | grep -Fq -- '-i -u 0 unit-test-container sh -lc cat > '\''/usr/local/bin/agent.sh'\''' || fail "Expected refresh_container_file to use exec -i for stdin streaming, got: $exec_log"
+}
+
 test_system_manifest_starts_stopped_container_and_restores_state() {
   begin_test "system-manifest starts a stopped container and restores stopped state"
 
@@ -802,11 +857,13 @@ main() {
   test_use_help_reports_new_command
   test_rm_help_reports_force_option
   test_agent_sh_runtime_info_reports_registry_metadata
+  test_agent_sh_runtime_list_reports_installed_runtimes_only
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_claude_runtime_info_reports_skeleton_metadata
   test_agent_sh_claude_runtime_install_fails_predictably
   test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
+  test_agent_sh_preferred_set_rejects_uninstalled_runtime
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write
   test_run_auth_flow_uses_agent_sh_auth_contract
@@ -817,6 +874,7 @@ main() {
   test_run_rejects_resource_flags_for_existing_container
   test_upgrade_uses_explicit_resource_overrides
   test_refresh_updates_managed_files_without_recreate
+  test_refresh_container_file_streams_source_via_stdin
   test_system_manifest_starts_stopped_container_and_restores_state
   test_runtime_cmd_starts_stopped_container_and_restores_state
   test_runtime_cmd_propagates_exec_failures

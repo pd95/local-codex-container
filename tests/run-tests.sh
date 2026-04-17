@@ -267,6 +267,7 @@ test_runtime_management_commands_work_for_existing_container() {
   run_capture "$AGENTCTL" runtime --name "$name" list
   assert_status 0
   assert_contains "codex"
+  assert_not_contains "claude"
 
   run_capture "$AGENTCTL" runtime --name "$name" info codex
   assert_status 0
@@ -319,6 +320,25 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   fi
 }
 
+test_runtime_info_claude_works_after_refresh_on_stopped_container() {
+  begin_test "runtime info claude works after refresh when the container is stopped"
+  local name
+
+  ensure_runtime_fixture_running
+  name="$RUNTIME_FIXTURE_NAME"
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+  assert_contains "Refresh complete: $name"
+
+  run_capture "$AGENTCTL" stop --name "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" runtime --name "$name" info claude
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "not-implemented"' >/dev/null || fail "Expected runtime info JSON for claude on stopped container after refresh, got: $RUN_OUTPUT"
+}
+
 main() {
   require_host_prereqs
 
@@ -343,6 +363,7 @@ main() {
   run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink" full
   run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container" smoke
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
+  run_selected_test test_runtime_info_claude_works_after_refresh_on_stopped_container "runtime info claude works after refresh when the container is stopped" smoke
   assert_selected_tests_ran
 
   log "PASS: all host integration tests completed"

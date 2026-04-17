@@ -165,7 +165,7 @@ agentctl run --cmd bash
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `agentctl` for a static default. All default images include both `bash` and `zsh`.
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
-- `agentctl runtime list`, `agentctl runtime info <runtime>`, and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract. The current branch fully wires `codex` and also ships a minimal `claude` manifest/adapter skeleton so the second-runtime path can be developed without another contract rewrite.
+- `agentctl runtime list` shows installed runtimes in the current container. `agentctl runtime info <runtime>` and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract for a declared runtime. The current branch fully wires `codex` and also ships a minimal `claude` manifest/adapter skeleton so the second-runtime path can be developed without another contract rewrite.
 - Runtime metadata now lives under `/etc/agentctl/runtimes.d`, and runtime-specific handlers live under `/usr/local/lib/agentctl/runtimes`. `agentctl refresh` updates those directories in-place for existing containers.
 - `agentctl runtime install codex` installs or refreshes the Codex runtime inside an existing container and marks it as preferred for that container.
 - `agentctl runtime install claude` currently exists only as a predictable placeholder and returns a clear "not implemented yet" error in this branch.
@@ -220,7 +220,7 @@ If you want Gemma to become the default local model, either set `CODEX_PROFILE=g
 ```bash
 agentctl --help          # show command overview and available subcommands/options
 agentctl auth            # run device-auth and store in Keychain
-agentctl runtime list    # list runtimes known to the current container
+agentctl runtime list    # list installed runtimes in the current container
 agentctl runtime info codex  # inspect manifest-backed runtime metadata
 agentctl runtime info claude  # inspect the minimal Claude runtime skeleton
 agentctl runtime capabilities codex  # inspect runtime commands/capabilities

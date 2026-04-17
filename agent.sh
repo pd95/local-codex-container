@@ -99,6 +99,17 @@ runtime_ids() {
   done | sort
 }
 
+runtime_ids_installed() {
+  local runtime
+
+  while IFS= read -r runtime; do
+    [ -n "$runtime" ] || continue
+    if runtime_command_exists "$runtime"; then
+      printf '%s\n' "$runtime"
+    fi
+  done < <(runtime_ids)
+}
+
 runtime_command_name() {
   runtime_manifest_string "$1" '.command'
 }
@@ -286,13 +297,13 @@ preferred_get() {
 
 preferred_set() {
   local runtime="${1:-}"
-  ensure_runtime_known "$runtime"
+  ensure_runtime_installed "$runtime"
   ensure_user_dirs
   printf '%s\n' "$runtime" >"$USER_RUNTIME_FILE"
 }
 
 runtime_list() {
-  runtime_ids
+  runtime_ids_installed
 }
 
 runtime_install() {

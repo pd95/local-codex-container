@@ -1647,7 +1647,7 @@ refresh_container_file() {
   [ -f "$source" ] || die "Refresh source not found: $source"
   dir="$(dirname "$target")"
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "mkdir -p '$dir'"
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "cat > '$target'" <"$source"
+  "$CONTAINER_CMD" exec -i -u 0 "$name" sh -lc "cat > '$target'" <"$source"
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "chmod $mode '$target' && chown $owner '$target'"
 }
 
