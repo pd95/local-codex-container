@@ -78,6 +78,10 @@ container_exists() {
   "$CONTAINER_CMD" ls -a 2>/dev/null | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
 }
 
+container_running() {
+  "$CONTAINER_CMD" ls 2>/dev/null | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+}
+
 image_exists() {
   "$CONTAINER_CMD" image inspect "$1" >/dev/null 2>&1
 }

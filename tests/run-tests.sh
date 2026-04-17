@@ -55,6 +55,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+RUNTIME_FIXTURE_NAME=""
+RUNTIME_FIXTURE_WORKDIR=""
+
+ensure_runtime_fixture() {
+  if [ -n "$RUNTIME_FIXTURE_NAME" ] && container_exists "$RUNTIME_FIXTURE_NAME"; then
+    return 0
+  fi
+
+  RUNTIME_FIXTURE_NAME="$(unique_name runtime-fixture)"
+  RUNTIME_FIXTURE_WORKDIR="$(new_workdir)"
+  register_container_cleanup "$RUNTIME_FIXTURE_NAME"
+
+  run_capture "$AGENTCTL" run --name "$RUNTIME_FIXTURE_NAME" --image agent-plain --workdir "$RUNTIME_FIXTURE_WORKDIR" --cmd true
+  assert_status 0
+}
+
+ensure_runtime_fixture_running() {
+  ensure_runtime_fixture
+
+  if container_running "$RUNTIME_FIXTURE_NAME"; then
+    return 0
+  fi
+
+  run_capture "$AGENTCTL" start --name "$RUNTIME_FIXTURE_NAME"
+  assert_status 0
+}
+
 test_temp_run_removes_container() {
   begin_test "run --temp removes the named container"
   local name
@@ -233,14 +260,9 @@ test_upgrade_overwrite_config_restores_image_defaults() {
 test_runtime_management_commands_work_for_existing_container() {
   begin_test "runtime list, info, capabilities, and use work for an existing container"
   local name
-  local workdir
 
-  name="$(unique_name runtime-management)"
-  workdir="$(new_workdir)"
-  register_container_cleanup "$name"
-
-  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
-  assert_status 0
+  ensure_runtime_fixture_running
+  name="$RUNTIME_FIXTURE_NAME"
 
   run_capture "$AGENTCTL" runtime --name "$name" list
   assert_status 0
@@ -258,7 +280,7 @@ test_runtime_management_commands_work_for_existing_container() {
   assert_status 0
   assert_contains "Preferred runtime set to codex in $name"
 
-  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd cat /home/coder/.config/agentctl/preferred-runtime
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- cat /home/coder/.config/agentctl/preferred-runtime
   assert_status 0
   assert_contains "codex"
 }
@@ -269,29 +291,21 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   local workdir
   local sentinel_file
 
-  name="$(unique_name runtime-refresh)"
-  workdir="$(new_workdir)"
+  ensure_runtime_fixture_running
+  name="$RUNTIME_FIXTURE_NAME"
+  workdir="$RUNTIME_FIXTURE_WORKDIR"
   sentinel_file="$workdir/runtime-registry.ok"
-  register_container_cleanup "$name"
-
-  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
-  assert_status 0
+  rm -f "$sentinel_file"
 
   run_capture "$AGENTCTL" refresh --name "$name"
   assert_status 0
   assert_contains "Refresh complete: $name"
-
-  run_capture "$AGENTCTL" start --name "$name"
-  assert_status 0
 
   run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- bash -lc '
     bash /usr/local/bin/agent.sh runtime info codex \
       | jq -e '"'"'.runtime == "codex" and .install_method == "npm-global"'"'"' >/dev/null
     printf "%s\n" runtime-registry-ok > /workdir/runtime-registry.ok
   '
-  assert_status 0
-
-  run_capture "$AGENTCTL" stop --name "$name"
   assert_status 0
 
   if ! [ -f "$sentinel_file" ]; then
