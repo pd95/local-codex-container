@@ -92,6 +92,7 @@ test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
   load_codexctl_functions
 
   local captured_pre_exec=""
+  local captured_mem=""
   local workdir
 
   workdir="$(new_workdir)"
@@ -100,6 +101,7 @@ test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
   default_name() { printf 'unit-test-container\n'; }
   run_container() {
     captured_pre_exec="$9"
+    captured_mem="$6"
   }
 
   run_cmd --name unit-test-container --workdir "$workdir" --runtime claude --install-runtime --shell
@@ -109,6 +111,7 @@ test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
   [ "$RUN_INSTALL_RUNTIME" -eq 1 ] || fail "Expected install-runtime to be enabled"
   [ "$RUN_SYNC_SELECTED_RUNTIME_AUTH" -eq 1 ] || fail "Expected runtime auth sync to be enabled"
   [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 0 ] || fail "Did not expect local-model preflight for Claude shell launch"
+  [ "$captured_mem" = "4G" ] || fail "Expected Claude bootstrap run to request 4G, got: $captured_mem"
 }
 
 test_run_cmd_rejects_non_codex_profile() {
@@ -1118,6 +1121,7 @@ test_run_auth_flow_installs_runtime_before_claude_auth() {
   local fake_keychain
   local stored_blob_file
   local exec_log_file
+  local create_log_file
   local runtime_info_count_file
   local auth_read_count_file
 
@@ -1127,6 +1131,7 @@ test_run_auth_flow_installs_runtime_before_claude_auth() {
   fake_keychain="$temp_dir/fake-keychain.sh"
   stored_blob_file="$temp_dir/stored-auth.json"
   exec_log_file="$temp_dir/exec.log"
+  create_log_file="$temp_dir/create.log"
   runtime_info_count_file="$temp_dir/runtime-info-count"
   auth_read_count_file="$temp_dir/auth-read-count"
   printf '0' >"$runtime_info_count_file"
@@ -1158,6 +1163,9 @@ CONTAINER_CMD=container
 container() {
   case "\$1" in
     create|start|stop|rm)
+      if [ "\$1" = "create" ]; then
+        printf '%s\n' "\$*" >>"$create_log_file"
+      fi
       return 0
       ;;
     exec)
@@ -1204,6 +1212,7 @@ EOF
 
   run_capture bash "$unit_script"
   assert_status 0
+  grep -Fq -- 'create -t -m 4G --name unit-auth-container' "$create_log_file" || fail "Expected Claude auth container to request 4G memory"
   grep -Fq 'bash /usr/local/bin/agent.sh runtime install claude' "$exec_log_file" || fail "Expected runtime install before Claude auth flow"
   grep -Fq 'bash -lc exec bash /usr/local/bin/agent.sh auth login claude' "$exec_log_file" || fail "Expected Claude auth login via agent.sh"
   [ -f "$stored_blob_file" ] || fail "Expected Claude auth blob to be written to fake keychain"

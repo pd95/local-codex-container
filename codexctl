@@ -8,6 +8,7 @@ AUTH_NAME_PREFIX="agent-openai-auth-"
 DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="${CODEX_PROFILE:-gpt-oss}"
 DEFAULT_CODEX_CMD=(codex)
+CLAUDE_MIN_INSTALL_MEM="4G"
 SETPRIV_ARGS=(setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs --)
 
 resolve_script_path() {
@@ -1434,9 +1435,15 @@ run_auth_flow() {
     die "Auth container already exists: $auth_name (remove it and retry)"
   fi
 
-  "$CONTAINER_CMD" create -t \
-    --name "$auth_name" \
-    "$image" sh -c 'sleep infinity' >/dev/null
+  local -a auth_create_cmd=("$CONTAINER_CMD" create -t)
+  if [ "$runtime" = "claude" ]; then
+    auth_create_cmd+=(-m "$CLAUDE_MIN_INSTALL_MEM")
+  fi
+  auth_create_cmd+=(
+    --name "$auth_name"
+    "$image" sh -c 'sleep infinity'
+  )
+  "${auth_create_cmd[@]}" >/dev/null
   created=1
 
   "$CONTAINER_CMD" start "$auth_name" >/dev/null
@@ -2568,6 +2575,9 @@ run_cmd() {
   image="$(image_ref_for_runtime "$image")"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
     name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
+  fi
+  if [ "$install_runtime" -eq 1 ] && [ "$runtime" = "claude" ] && [ -z "$mem" ] && { [ "$temp" -eq 1 ] || [ -z "$name" ] || ! container_exists "$name"; }; then
+    mem="$CLAUDE_MIN_INSTALL_MEM"
   fi
   if [ "$temp" -eq 0 ] && [ -n "$name" ] && container_exists "$name" && { [ -n "$cpu" ] || [ -n "$mem" ]; }; then
     die "--cpu and --mem only apply when creating a new container. Use ${CLI_NAME} upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
