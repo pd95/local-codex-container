@@ -182,6 +182,31 @@ test_upgrade_overwrite_config_restores_image_defaults() {
   assert_contains "overwrite-config-ok"
 }
 
+test_runtime_management_commands_work_for_existing_container() {
+  begin_test "runtime list and use work for an existing container"
+  local name
+  local workdir
+
+  name="$(unique_name runtime-management)"
+  workdir="$(new_workdir)"
+  register_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" runtime --name "$name" list
+  assert_status 0
+  assert_contains "codex"
+
+  run_capture "$AGENTCTL" use --name "$name" codex
+  assert_status 0
+  assert_contains "Preferred runtime set to codex in $name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd cat /home/coder/.config/agentctl/preferred-runtime
+  assert_status 0
+  assert_contains "codex"
+}
+
 main() {
   require_host_prereqs
 
@@ -197,6 +222,7 @@ main() {
   test_upgrade_preflight_failure_keeps_container
   test_run_reset_config_restores_image_defaults
   test_upgrade_overwrite_config_restores_image_defaults
+  test_runtime_management_commands_work_for_existing_container
 
   log "PASS: all host integration tests completed"
 }

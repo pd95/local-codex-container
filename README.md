@@ -130,6 +130,14 @@ agentctl run --openai
 # Update codex package in the running container
 agentctl run --update
 
+# List or inspect runtimes in an existing container
+agentctl runtime list
+agentctl runtime info codex
+
+# Install or select the preferred runtime in an existing container
+agentctl runtime install codex
+agentctl use codex
+
 # Recreate a container from the latest image while preserving config
 agentctl refresh
 
@@ -157,6 +165,9 @@ agentctl run --cmd bash
 - In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `agentctl` for a static default. All default images include both `bash` and `zsh`.
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
+- `agentctl runtime list`, `agentctl runtime info <runtime>`, and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract. Phase 2 still ships only `codex`, but the command surface is now explicit.
+- `agentctl runtime install codex` installs or refreshes the Codex runtime inside an existing container and marks it as preferred for that container.
+- `agentctl use codex` updates the container-local preferred runtime without changing the default image selection used by `agentctl run`.
 - `--cpu` and `--mem` on `agentctl run` only apply when creating a new container. If the named container already exists, `agentctl run` fails fast and tells you to use `agentctl refresh` instead of silently ignoring the resource request.
 - `agentctl refresh` is the normal non-destructive update path for an existing named container. By default it exports the current container to a backup image, preserves `/home/coder/.codex`, recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state. It also accepts `--cpu` and `--mem` when you want to change the recreated container's resource limits alongside an image change or on their own. Use `--no-backup` only when you intentionally want a cleanup-friendly refresh without keeping that recovery image.
 - If an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `agentctl refresh` stops and asks you to re-run with `--overwrite-config`. You can also reset image-owned defaults, including `local_models.json`, with `agentctl run --name <container> --reset-config`.
@@ -207,6 +218,9 @@ If you want Gemma to become the default local model, either set `CODEX_PROFILE=g
 ```bash
 agentctl --help          # show command overview and available subcommands/options
 agentctl auth            # run device-auth and store in Keychain
+agentctl runtime list    # list runtimes known to the current container
+agentctl runtime install codex  # install/refresh Codex in the current container
+agentctl use codex       # set Codex as the preferred runtime in the current container
 agentctl images          # list local agent image refs
 agentctl images --backup # list local agent backup image refs
 agentctl refresh         # recreate the current container from the latest image

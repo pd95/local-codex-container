@@ -472,6 +472,8 @@ Usage: $CLI_NAME <command> [options]
 Commands:
   build      Build agent images
   run        Create/start a container for the current directory
+  runtime    Manage coding runtimes inside an existing container
+  use        Select the preferred runtime for an existing container
   refresh    Refresh agentctl-managed files in an existing container
   system-manifest  Print a container package manifest
   upgrade    Recreate a container from the latest image while preserving config
@@ -544,6 +546,29 @@ Options:
 
 Refresh updates agentctl-managed files in an existing container without
 recreating it. It preserves user-installed packages and other mutable state.
+EOF
+}
+
+usage_runtime() {
+  cat <<EOF
+Usage: $CLI_NAME runtime <list|info|capabilities|install|update|reset-config> [options] [runtime]
+
+Options:
+  --name NAME  Container name (default: agent-<dir>)
+
+Examples:
+  $CLI_NAME runtime list
+  $CLI_NAME runtime info codex
+  $CLI_NAME runtime install codex
+EOF
+}
+
+usage_use() {
+  cat <<EOF
+Usage: $CLI_NAME use <runtime> [options]
+
+Options:
+  --name NAME  Container name (default: agent-<dir>)
 EOF
 }
 
@@ -1624,6 +1649,108 @@ refresh_cmd() {
   echo "Refresh complete: $name" >&2
 }
 
+run_agent_sh_in_container() {
+  local name="$1"
+  shift
+  local was_running=0
+  local started_for_command=0
+  local status=0
+
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_command=1
+  fi
+
+  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" /usr/local/bin/agent.sh "$@"; then
+    status=$?
+  fi
+
+  if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+
+  return "$status"
+}
+
+runtime_cmd() {
+  local name=""
+  local subcommand=""
+  local runtime=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_runtime; return 0 ;;
+      *)
+        if [ -z "$subcommand" ]; then
+          subcommand="$1"
+        elif [ -z "$runtime" ]; then
+          runtime="$1"
+        else
+          die "Unexpected argument for runtime: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+
+  case "$subcommand" in
+    list)
+      run_agent_sh_in_container "$name" runtime list
+      ;;
+    info|capabilities|install|update|reset-config)
+      [ -n "$runtime" ] || die "Missing runtime for $subcommand"
+      run_agent_sh_in_container "$name" runtime "$subcommand" "$runtime"
+      ;;
+    "")
+      usage_runtime
+      ;;
+    *)
+      die "Unknown runtime command: $subcommand"
+      ;;
+  esac
+}
+
+use_cmd() {
+  local name=""
+  local runtime=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_use; return 0 ;;
+      *)
+        if [ -z "$runtime" ]; then
+          runtime="$1"
+        else
+          die "Unexpected argument for use: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  require_container
+  [ -n "$runtime" ] || die "Missing runtime for use"
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+
+  run_agent_sh_in_container "$name" preferred set "$runtime"
+  echo "Preferred runtime set to $runtime in $name" >&2
+}
+
 system_manifest_cmd() {
   local name=""
   local was_running=0
@@ -2490,6 +2617,8 @@ cmd="${1:-}"
 case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
+  runtime) shift; runtime_cmd "$@" ;;
+  use) shift; use_cmd "$@" ;;
   refresh) shift; refresh_cmd "$@" ;;
   system-manifest) shift; system_manifest_cmd "$@" ;;
   upgrade) shift; upgrade_cmd "$@" ;;
