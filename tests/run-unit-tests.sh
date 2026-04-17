@@ -93,10 +93,55 @@ test_build_help_reports_primary_base_images() {
 
   run_capture "$AGENTCTL" build --help
   assert_status 0
+  assert_contains "--default-runtime"
   assert_contains "agent-plain"
   assert_contains "agent-python"
   assert_contains "agent-swift"
   assert_contains "agent-office remains available only as a legacy compatibility image"
+}
+
+test_build_cmd_passes_default_runtime_build_arg() {
+  begin_test "build_cmd passes the configured default runtime into container builds"
+
+  load_codexctl_functions
+
+  local build_call=""
+
+  require_container() { return 0; }
+  image_exists() { return 1; }
+  stop_buildkit_container() { :; }
+  mock_container() {
+    if [ "$1" = "build" ]; then
+      build_call="$(printf '%s\n' "$*")"
+    fi
+  }
+  CONTAINER_CMD="mock_container"
+
+  run_capture build_cmd --image agent-plain --default-runtime claude
+  assert_status 0
+  printf '%s\n' "$build_call" | grep -Fq -- '--build-arg AGENT_DEFAULT_RUNTIME=claude' || fail "Expected build arg for default runtime, got: $build_call"
+}
+
+test_build_cmd_rebuilds_existing_image_when_default_runtime_is_overridden() {
+  begin_test "build_cmd rebuilds when default runtime is overridden"
+
+  load_codexctl_functions
+
+  local build_calls=0
+
+  require_container() { return 0; }
+  image_exists() { return 0; }
+  stop_buildkit_container() { :; }
+  mock_container() {
+    if [ "$1" = "build" ]; then
+      build_calls=$((build_calls + 1))
+    fi
+  }
+  CONTAINER_CMD="mock_container"
+
+  run_capture build_cmd --image agent-plain --default-runtime claude
+  assert_status 0
+  [ "$build_calls" -eq 1 ] || fail "Expected one build call when overriding the default runtime, got: $build_calls"
 }
 
 test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
@@ -160,6 +205,18 @@ test_build_cmd_warns_for_legacy_office_image() {
   run_capture build_cmd --image agent-office --snapshot
   assert_status 0
   assert_contains "legacy compatibility image"
+}
+
+test_build_cmd_rejects_default_runtime_snapshot_combo() {
+  begin_test "build_cmd rejects combining default runtime overrides with snapshot"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+
+  run_capture build_cmd --image agent-plain --default-runtime claude --snapshot
+  assert_status 1
+  assert_contains "--default-runtime cannot be combined with --snapshot"
 }
 
 test_run_cmd_rejects_non_codex_profile() {
@@ -259,6 +316,119 @@ test_run_pre_exec_syncs_selected_runtime_auth_when_available() {
   printf '%s' "$call_log" | grep -Fq $'unit-test-container:runtime:install' || fail "Expected runtime install call, got: $call_log"
   printf '%s' "$call_log" | grep -Fq $'unit-test-container:preferred:set' || fail "Expected preferred set call, got: $call_log"
   printf '%s' "$call_log" | grep -Fq $'sync:unit-test-container:claude' || fail "Expected runtime auth sync call, got: $call_log"
+}
+
+test_run_pre_exec_syncs_auth_for_preferred_runtime_when_unspecified() {
+  begin_test "run_pre_exec syncs auth for the preferred runtime when runtime is unspecified"
+
+  load_codexctl_functions
+
+  local call_log=""
+
+  RUN_SELECTED_RUNTIME=""
+  RUN_INSTALL_RUNTIME=0
+  RUN_SYNC_SELECTED_RUNTIME_AUTH=1
+  RUN_SYNC_OPENAI=0
+  RUN_LOCAL_MODEL_PREFLIGHT=0
+  RUN_UPDATE_CODEX=0
+
+  run_agent_sh_in_container() {
+    if [ "$2" = "preferred" ] && [ "$3" = "get" ]; then
+      printf 'claude\n'
+      return 0
+    fi
+    call_log="${call_log}$1:$2:$3"$'\n'
+  }
+  sync_runtime_auth_to_container_if_available() {
+    call_log="${call_log}sync:$1:$2"$'\n'
+  }
+
+  run_capture run_pre_exec unit-test-container
+  assert_status 0
+  printf '%s' "$call_log" | grep -Fq $'sync:unit-test-container:claude' || fail "Expected runtime auth sync for preferred claude, got: $call_log"
+}
+
+test_run_pre_exec_skips_local_model_preflight_for_preferred_claude() {
+  begin_test "run_pre_exec skips local-model preflight for preferred claude"
+
+  load_codexctl_functions
+
+  local preflight_called=0
+
+  RUN_SELECTED_RUNTIME=""
+  RUN_INSTALL_RUNTIME=0
+  RUN_SYNC_SELECTED_RUNTIME_AUTH=0
+  RUN_SYNC_OPENAI=0
+  RUN_LOCAL_MODEL_PREFLIGHT=1
+  RUN_UPDATE_CODEX=0
+
+  run_agent_sh_in_container() {
+    if [ "$2" = "preferred" ] && [ "$3" = "get" ]; then
+      printf 'claude\n'
+      return 0
+    fi
+    return 0
+  }
+  local_model_preflight() {
+    preflight_called=1
+  }
+
+  run_capture run_pre_exec unit-test-container
+  assert_status 0
+  [ "$preflight_called" -eq 0 ] || fail "Did not expect local-model preflight for preferred claude"
+}
+
+test_run_pre_exec_runs_local_model_preflight_for_preferred_codex() {
+  begin_test "run_pre_exec runs local-model preflight for preferred codex"
+
+  load_codexctl_functions
+
+  local preflight_called=0
+
+  RUN_SELECTED_RUNTIME=""
+  RUN_INSTALL_RUNTIME=0
+  RUN_SYNC_SELECTED_RUNTIME_AUTH=0
+  RUN_SYNC_OPENAI=0
+  RUN_LOCAL_MODEL_PREFLIGHT=1
+  RUN_UPDATE_CODEX=0
+
+  run_agent_sh_in_container() {
+    if [ "$2" = "preferred" ] && [ "$3" = "get" ]; then
+      printf 'codex\n'
+      return 0
+    fi
+    return 0
+  }
+  local_model_preflight() {
+    preflight_called=1
+  }
+
+  run_capture run_pre_exec unit-test-container
+  assert_status 0
+  [ "$preflight_called" -eq 1 ] || fail "Expected local-model preflight for preferred codex"
+}
+
+test_run_cmd_default_entrypoint_enables_preferred_runtime_auth_sync() {
+  begin_test "run_cmd enables preferred runtime auth sync for the default entrypoint"
+
+  load_codexctl_functions
+
+  local captured_pre_exec=""
+  local workdir
+
+  workdir="$(new_workdir)"
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  run_container() {
+    captured_pre_exec="$9"
+  }
+
+  run_cmd --name unit-test-container --workdir "$workdir"
+
+  [ "$captured_pre_exec" = "run_pre_exec" ] || fail "Expected run_pre_exec, got: $captured_pre_exec"
+  [ "$RUN_SYNC_SELECTED_RUNTIME_AUTH" -eq 1 ] || fail "Expected preferred runtime auth sync to be enabled"
+  [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ] || fail "Expected local-model preflight to remain enabled"
 }
 
 test_sync_runtime_auth_to_container_if_available_skips_missing_keychain() {

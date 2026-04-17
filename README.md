@@ -99,6 +99,9 @@ run on the host, not inside a container. For broader manual coverage, see
 # Build images once
 agentctl build
 
+# Build images with Claude as the default installed runtime
+agentctl build --default-runtime claude
+
 # Snapshot current images without rebuilding
 agentctl build --snapshot
 
@@ -180,13 +183,14 @@ agentctl run --cmd bash
 #### Quick start notes
 
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `agent-plain:20260313-154500`. By default `agentctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM agent...` dependencies, and builds them in dependency order. Use `agentctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
+- `agentctl build --default-runtime <runtime>` changes which runtime is installed and marked preferred in newly built images. Image builds now invoke the copied in-image `agent.sh runtime install ...` path, so the same runtime adapter logic is used during builds and later in-container installs.
 - Local-model runs use a Codex profile from `config.toml`. The default profile is `gpt-oss`; use `agentctl run --profile gemma` to launch the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `agentctl exec`.
 - `agentctl run --runtime <runtime>` selects the preferred runtime to launch in the target container before executing the default entrypoint. Add `--install-runtime` to install that runtime first when needed. A practical Claude bootstrap path is now just `agentctl run --runtime claude --install-runtime`.
 - For most new setups, prefer runtime-first flows such as `agentctl run --runtime codex --install-runtime` or `agentctl run --runtime claude --install-runtime` over choosing an image because it happens to bundle a specific agent/runtime.
-- When you use `agentctl run --runtime <runtime>`, agentctl now also performs best-effort pre-run auth replay from Keychain if that runtime exposes host-managed auth and a matching Keychain entry exists. This means a previously authenticated Claude runtime can come up already logged in on a fresh container without a separate manual auth write step.
+- `agentctl run` now performs best-effort pre-run auth replay from Keychain for the effective runtime it is about to launch, whether that runtime comes from `--runtime <runtime>` or from the image/container preferred runtime. This means a previously authenticated Claude runtime can come up already logged in on a fresh container without a separate manual auth write step.
 - Claude’s native installer can be OOM-killed on Linux if the container is too small. For fresh Claude bootstrap and temporary Claude auth containers, `agentctl` now defaults the create-time memory limit to `4G` unless you explicitly override it.
-- In local-model mode, the Ollama reachability preflight only runs for the default Codex startup path. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
+- In local-model mode, the Ollama reachability preflight only runs when the effective runtime being launched is Codex. `--cmd` and `--shell` skip that check so image inspection and ad hoc commands still work without a running Ollama listener.
 - `CODEX_SHELL` overrides the shell used by `run --shell` and `exec` (default: `bash`). You can also set `DEFAULT_SHELL` in `agentctl` for a static default. All default images include both `bash` and `zsh`.
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
 - `agentctl runtime list` shows installed runtimes in the current container. `agentctl runtime info <runtime>` and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract for a declared runtime, including explicit capability booleans and supported auth formats. The current branch fully wires `codex` and now also ships a real Claude install/update/reset-config/auth adapter.
@@ -390,6 +394,21 @@ container image tag agent-swift "agent-swift:${STAMP}"
 ```
 
 This keeps the stable image names for normal use and also creates immutable timestamped tags for A/B testing and rollback. `agentctl build` automates that same dependency ordering for both the built-in images and any custom local `DockerFile.<name>` images that follow the naming convention above.
+
+To change the default installed runtime at build time:
+
+```bash
+agentctl build --default-runtime claude
+
+# Direct container build equivalent for agent-plain
+container build \
+  -t agent-plain \
+  -f DockerFile \
+  --build-arg AGENT_DEFAULT_RUNTIME=claude \
+  .
+```
+
+When you set `--default-runtime`, `agentctl build` performs a real rebuild instead of reusing an existing stable image, because the selected runtime changes the image contents.
 Notes:
 - The Swift image includes `format` and `lint` wrappers for `swift-format` and initializes `swiftly` for toolchain management.
 - `agent-office` is still buildable manually from `DockerFile.office` if you need the legacy compatibility image for an existing workflow.

@@ -37,7 +37,9 @@ agent_runtime_install() {
 
   [ "$runtime" = "codex" ] || die "unsupported runtime adapter: $runtime"
   npm install -g @openai/codex --omit=dev --no-fund --no-audit
-  preferred_set "$runtime"
+  if [ "${AGENTCTL_SKIP_PREFERRED_SET:-0}" != "1" ]; then
+    preferred_set "$runtime"
+  fi
 }
 
 agent_runtime_update() {

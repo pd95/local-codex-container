@@ -79,7 +79,9 @@ agent_runtime_install() {
   curl -fsSL https://claude.ai/install.sh | bash
   claude_command_path >/dev/null 2>&1 || die "claude installer finished but launcher was not found on PATH or in ~/.local/bin"
   agent_runtime_reset_config "$runtime" "$(runtime_default_config_dir "$runtime")"
-  preferred_set "$runtime"
+  if [ "${AGENTCTL_SKIP_PREFERRED_SET:-0}" != "1" ]; then
+    preferred_set "$runtime"
+  fi
 }
 
 agent_runtime_update() {
