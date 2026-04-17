@@ -518,12 +518,13 @@ EOF
 
 usage_build() {
   cat <<EOF
-Usage: $CLI_NAME build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
+Usage: $CLI_NAME build [--image NAME] [--default-runtime NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
 
 Options:
-  --image NAME  Local image name to build (for example: agent-plain, agent-python, agent-swift, agent-my-team)
-  --rebuild     Rebuild images even if they already exist (disables build cache only; does not refresh FROM tags)
-  --snapshot    Add a fresh UTC timestamp tag for existing images without rebuilding
+  --image NAME       Local image name to build (for example: agent-plain, agent-python, agent-swift, agent-my-team)
+  --default-runtime  Runtime to install as the image default (default: codex)
+  --rebuild          Rebuild images even if they already exist (disables build cache only; does not refresh FROM tags)
+  --snapshot         Add a fresh UTC timestamp tag for existing images without rebuilding
   --pull-base     Pull the base image before building (preferred way to refresh remote FROM tags)
   --refresh-base  Remove the base image first so it is re-fetched
 
@@ -1189,6 +1190,8 @@ images_cmd() {
 
 build_cmd() {
   local image=""
+  local default_runtime="codex"
+  local default_runtime_overridden=0
   local rebuild=0
   local snapshot=0
   local refresh_base=0
@@ -1198,6 +1201,7 @@ build_cmd() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --image) image="$2"; shift 2 ;;
+      --default-runtime) default_runtime="$2"; default_runtime_overridden=1; shift 2 ;;
       --rebuild) rebuild=1; shift ;;
       --snapshot) snapshot=1; shift ;;
       --refresh-base) refresh_base=1; shift ;;
@@ -1210,6 +1214,13 @@ build_cmd() {
   if [ -n "$image" ]; then
     image="$(image_family_preferred "$image")"
     warn_legacy_compat_image_usage "$image"
+  fi
+
+  if [ ! -f "$SCRIPT_DIR/runtimes.d/${default_runtime}.json" ]; then
+    die "Unknown runtime for build: $default_runtime"
+  fi
+  if [ "$default_runtime_overridden" -eq 1 ] && [ "$snapshot" -eq 1 ]; then
+    die "--default-runtime cannot be combined with --snapshot"
   fi
 
   require_container
@@ -1400,12 +1411,13 @@ build_cmd() {
     local file
     local file_path
     local context="$SCRIPT_DIR"
+    local -a build_args=()
     name="$(image_family_preferred "$name")"
     local versioned_name="${name}:${build_stamp}"
     local base=""
     file="$(dockerfile_name_for_image "$name")"
     file_path="$SCRIPT_DIR/$file"
-    if [ "$rebuild" -eq 0 ] && image_exists "$name"; then
+    if [ "$rebuild" -eq 0 ] && [ "$default_runtime_overridden" -eq 0 ] && image_exists "$name"; then
       if [ "$snapshot" -eq 1 ]; then
         echo "Snapshotting existing image tags: $name, $versioned_name"
         "$CONTAINER_CMD" image tag "$name" "$versioned_name"
@@ -1431,11 +1443,14 @@ build_cmd() {
       fi
     fi
     echo "Building image tags: $name, $versioned_name"
+    build_args=(build -t "$name" -f "$file_path" --build-arg "AGENT_DEFAULT_RUNTIME=$default_runtime")
     if [ -n "$no_cache" ]; then
-      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$no_cache" "$context"
+      build_args+=("$no_cache")
+      build_args+=("$context")
     else
-      "$CONTAINER_CMD" build -t "$name" -f "$file_path" "$context"
+      build_args+=("$context")
     fi
+    "$CONTAINER_CMD" "${build_args[@]}"
     "$CONTAINER_CMD" image tag "$name" "$versioned_name"
   }
 

@@ -93,10 +93,55 @@ test_build_help_reports_primary_base_images() {
 
   run_capture "$AGENTCTL" build --help
   assert_status 0
+  assert_contains "--default-runtime"
   assert_contains "agent-plain"
   assert_contains "agent-python"
   assert_contains "agent-swift"
   assert_contains "agent-office remains available only as a legacy compatibility image"
+}
+
+test_build_cmd_passes_default_runtime_build_arg() {
+  begin_test "build_cmd passes the configured default runtime into container builds"
+
+  load_codexctl_functions
+
+  local build_call=""
+
+  require_container() { return 0; }
+  image_exists() { return 1; }
+  stop_buildkit_container() { :; }
+  mock_container() {
+    if [ "$1" = "build" ]; then
+      build_call="$(printf '%s\n' "$*")"
+    fi
+  }
+  CONTAINER_CMD="mock_container"
+
+  run_capture build_cmd --image agent-plain --default-runtime claude
+  assert_status 0
+  printf '%s\n' "$build_call" | grep -Fq -- '--build-arg AGENT_DEFAULT_RUNTIME=claude' || fail "Expected build arg for default runtime, got: $build_call"
+}
+
+test_build_cmd_rebuilds_existing_image_when_default_runtime_is_overridden() {
+  begin_test "build_cmd rebuilds when default runtime is overridden"
+
+  load_codexctl_functions
+
+  local build_calls=0
+
+  require_container() { return 0; }
+  image_exists() { return 0; }
+  stop_buildkit_container() { :; }
+  mock_container() {
+    if [ "$1" = "build" ]; then
+      build_calls=$((build_calls + 1))
+    fi
+  }
+  CONTAINER_CMD="mock_container"
+
+  run_capture build_cmd --image agent-plain --default-runtime claude
+  assert_status 0
+  [ "$build_calls" -eq 1 ] || fail "Expected one build call when overriding the default runtime, got: $build_calls"
 }
 
 test_run_cmd_runtime_selection_prepares_runtime_before_launch() {
@@ -160,6 +205,18 @@ test_build_cmd_warns_for_legacy_office_image() {
   run_capture build_cmd --image agent-office --snapshot
   assert_status 0
   assert_contains "legacy compatibility image"
+}
+
+test_build_cmd_rejects_default_runtime_snapshot_combo() {
+  begin_test "build_cmd rejects combining default runtime overrides with snapshot"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+
+  run_capture build_cmd --image agent-plain --default-runtime claude --snapshot
+  assert_status 1
+  assert_contains "--default-runtime cannot be combined with --snapshot"
 }
 
 test_run_cmd_rejects_non_codex_profile() {

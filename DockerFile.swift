@@ -1,6 +1,8 @@
 # For Swift Development
 FROM swift:latest
 
+ARG AGENT_DEFAULT_RUNTIME=codex
+
 # --- Core dev tooling (keep lean, no recommends) ---
 RUN DEBIAN_FRONTEND=noninteractive \
     apt-get update && \
@@ -9,13 +11,6 @@ RUN DEBIAN_FRONTEND=noninteractive \
         make \
         python-is-python3 \
   && rm -rf /var/lib/apt/lists/*
-
-# --- Codex CLI ---
-RUN npm install -g @openai/codex \
-    --omit=dev \
-    --no-fund \
-    --no-audit \
-    && npm cache clean --force
 
 # --- Wrapper scripts (swift-format is already in swift:latest) ---
 RUN printf '%s\n' \
@@ -69,8 +64,7 @@ RUN chmod 0755 /usr/local/bin/agent.sh \
  && chmod 0644 /etc/profile.d/agentctl-path.sh /etc/claudectl/settings.json \
  && find /usr/local/lib/agentctl/runtimes -type f -name '*.sh' -exec chmod 0644 {} + \
  && find /usr/local/lib/agentctl/features -type f -name '*.sh' -exec chmod 0644 {} + \
- && mkdir -p /etc/agentctl \
- && printf '%s\n' codex > /etc/agentctl/preferred-runtime
+ && mkdir -p /etc/agentctl
 
 # Swiftly paths (user-owned, so codex can install toolchains later if needed)
 ENV SWIFTLY_HOME_DIR=/home/coder/.swiftly
@@ -79,6 +73,14 @@ ENV PATH=/home/coder/.local/bin:$PATH
 
 RUN mkdir -p /home/coder/.local/bin /home/coder/.swiftly \
  && chown -R coder:coder /home/coder/.local /home/coder/.swiftly
+
+# --- Install the configured default runtime via agent.sh ---
+RUN HOME=/home/coder \
+    XDG_CONFIG_HOME=/home/coder/.config \
+    AGENTCTL_SKIP_PREFERRED_SET=1 \
+    bash /usr/local/bin/agent.sh runtime install "$AGENT_DEFAULT_RUNTIME" \
+ && chown -R coder:coder /home/coder /workdir \
+ && printf '%s\n' "$AGENT_DEFAULT_RUNTIME" > /etc/agentctl/preferred-runtime
 
 RUN mkdir -p /etc/codexctl /etc/agentctl \
  && cp /home/coder/.codex/config.toml /home/coder/.codex/local_models.json /etc/codexctl/ \
