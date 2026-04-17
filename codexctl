@@ -1683,9 +1683,7 @@ run_agent_sh_in_container() {
     started_for_command=1
   fi
 
-  if ! "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh "$@"; then
-    status=$?
-  fi
+  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh "$@" || status=$?
 
   if [ "$started_for_command" -eq 1 ] && [ "$was_running" -eq 0 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null
