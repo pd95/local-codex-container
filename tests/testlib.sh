@@ -2,6 +2,7 @@
 set -euo pipefail
 
 TEST_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+AGENTCTL="${AGENTCTL:-$TEST_ROOT/agentctl}"
 CODEXCTL="${CODEXCTL:-$TEST_ROOT/codexctl}"
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 
@@ -24,6 +25,7 @@ fail() {
 }
 
 require_host_prereqs() {
+  command -v "$AGENTCTL" >/dev/null 2>&1 || fail "Missing agentctl: $AGENTCTL"
   command -v "$CODEXCTL" >/dev/null 2>&1 || fail "Missing codexctl: $CODEXCTL"
   command -v "$CONTAINER_CMD" >/dev/null 2>&1 || fail "Missing container runtime command: $CONTAINER_CMD"
   if [ "$(uname -s)" != "Darwin" ]; then
@@ -33,7 +35,7 @@ require_host_prereqs() {
 
 unique_name() {
   local suffix="$1"
-  printf 'codexctl-test-%s-%s-%s' "$suffix" "$(date -u +%Y%m%d%H%M%S)" "$$"
+  printf 'agentctl-test-%s-%s-%s' "$suffix" "$(date -u +%Y%m%d%H%M%S)" "$$"
 }
 
 new_workdir() {
@@ -76,7 +78,7 @@ image_exists() {
 }
 
 list_backup_images() {
-  "$CODEXCTL" images --backup --image "$1" 2>/dev/null || true
+  "$AGENTCTL" images --backup --image "$1" 2>/dev/null || true
 }
 
 run_capture() {
@@ -125,12 +127,12 @@ cleanup() {
   local path
 
   for image_ref in $CLEANUP_BACKUP_IMAGES; do
-    "$CODEXCTL" images prune --backup --image "$image_ref" --keep 0 >/dev/null 2>&1 || true
+    "$AGENTCTL" images prune --backup --image "$image_ref" --keep 0 >/dev/null 2>&1 || true
   done
 
   for name in $CLEANUP_CONTAINERS; do
     if container_exists "$name"; then
-      "$CODEXCTL" rm --name "$name" >/dev/null 2>&1 || true
+      "$AGENTCTL" rm --name "$name" >/dev/null 2>&1 || true
     fi
   done
 

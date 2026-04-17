@@ -2,9 +2,9 @@
 set -euo pipefail
 
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
-DEFAULT_IMAGE="codex"
-DEFAULT_NAME_PREFIX="codex-"
-AUTH_NAME_PREFIX="codex-openai-auth-"
+DEFAULT_IMAGE="agent-plain"
+DEFAULT_NAME_PREFIX="agent-"
+AUTH_NAME_PREFIX="agent-openai-auth-"
 DEFAULT_SHELL="${CODEX_SHELL:-bash}"
 DEFAULT_CODEX_PROFILE="${CODEX_PROFILE:-gpt-oss}"
 DEFAULT_CODEX_CMD=(codex)
@@ -26,6 +26,7 @@ resolve_script_path() {
 
 SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+CLI_NAME="${AGENTCTL_NAME:-$(basename -- "$SCRIPT_PATH")}"
 KEYCHAIN_SCRIPT="$SCRIPT_DIR/codex-auth-keychain.sh"
 
 die() {
@@ -260,10 +261,44 @@ image_exists() {
   parse_image_list | grep -Fqx -- "$image"
 }
 
+image_family_preferred() {
+  local image="$1"
+  local family="${image%%:*}"
+  local tag=""
+
+  if [ "$family" != "$image" ]; then
+    tag=":${image#*:}"
+  fi
+
+  case "$family" in
+    codex|agent) echo "agent-plain${tag}" ;;
+    codex-python) echo "agent-python${tag}" ;;
+    codex-swift) echo "agent-swift${tag}" ;;
+    codex-office) echo "agent-office${tag}" ;;
+    agent-plain|agent-python|agent-swift|agent-office) echo "${family}${tag}" ;;
+    *) echo "$image" ;;
+  esac
+}
+
+image_ref_for_runtime() {
+  local image="$1"
+  local preferred
+  preferred="$(image_family_preferred "$image")"
+  if image_exists "$preferred"; then
+    echo "$preferred"
+    return 0
+  fi
+  if image_exists "$image"; then
+    echo "$image"
+    return 0
+  fi
+  echo "$preferred"
+}
+
 is_codex_image_family() {
   case "$1" in
-    codex) return 0 ;;
-    codex-*)
+    codex|agent|agent-plain|agent-python|agent-swift|agent-office) return 0 ;;
+    codex-*|agent-*)
       if is_codex_backup_image_ref "$1"; then
         return 1
       fi
@@ -278,14 +313,14 @@ is_codex_image_filter_name() {
   if is_codex_image_family "$image_filter_name"; then
     return 0
   fi
-  if [[ "$image_filter_name" == codex-* ]]; then
+  if [[ "$image_filter_name" == codex-* || "$image_filter_name" == agent-* ]]; then
     return 0
   fi
   return 1
 }
 
 is_codex_backup_image_ref() {
-  [[ "$1" =~ ^codex-.*-backup-[0-9]{14}$ ]]
+  [[ "$1" =~ ^(codex|agent)-.*-backup-[0-9]{14}$ ]]
 }
 
 codex_backup_base() {
@@ -425,18 +460,20 @@ sanitize_image_name() {
   sanitized="${sanitized#-}"
   sanitized="${sanitized%-}"
   if [ -z "$sanitized" ]; then
-    sanitized="codex-backup"
+    sanitized="agent-backup"
   fi
   echo "$sanitized"
 }
 
 usage() {
-  cat <<'EOF'
-Usage: codexctl <command> [options]
+  cat <<EOF
+Usage: $CLI_NAME <command> [options]
 
 Commands:
-  build      Build Codex images
+  build      Build agent images
   run        Create/start a container for the current directory
+  refresh    Refresh agentctl-managed files in an existing container
+  system-manifest  Print a container package manifest
   upgrade    Recreate a container from the latest image while preserving config
   auth       Run OpenAI device auth flow and store in Keychain
   exec       Exec into a running container (default: bash)
@@ -446,41 +483,43 @@ Commands:
   restart    Restart a container
   rm         Remove a container
   ls         List containers
-  images     List local Codex images or prune old timestamp tags
+  images     List local agent images or prune old timestamp tags
 
-Run "codexctl <command> --help" for command-specific options.
+Run "$CLI_NAME <command> --help" for command-specific options.
 EOF
 }
 
 usage_build() {
-  cat <<'EOF'
-Usage: codexctl build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
+  cat <<EOF
+Usage: $CLI_NAME build [--image NAME] [--rebuild] [--snapshot] [--pull-base] [--refresh-base]
 
 Options:
-  --image NAME  Local image name to build (for example: codex, codex-python, codex-my-team)
+  --image NAME  Local image name to build (for example: agent-plain, agent-python, agent-swift, agent-my-team)
   --rebuild     Rebuild images even if they already exist (disables build cache only; does not refresh FROM tags)
   --snapshot    Add a fresh UTC timestamp tag for existing images without rebuilding
   --pull-base     Pull the base image before building (preferred way to refresh remote FROM tags)
   --refresh-base  Remove the base image first so it is re-fetched
 
-Each successful build keeps the stable image name (for example `codex`) and
-also adds an immutable UTC timestamp tag (for example `codex:20260313-154500`).
+Each successful build keeps the stable image name (for example `agent-plain`) and
+also adds an immutable UTC timestamp tag (for example `agent-plain:20260313-154500`).
 Local image names follow this convention:
-  codex         -> DockerFile
-  codex-<name>  -> DockerFile.<name>
+  agent-plain   -> DockerFile
+  agent-<name>  -> DockerFile.<name>
 
-When a local Dockerfile uses FROM another local codex image, codexctl builds the
+Legacy aliases `codex`, `codex-python`, and `codex-swift` are accepted as inputs.
+
+When a local Dockerfile uses FROM another local agent image, $CLI_NAME builds the
 dependency chain first.
 EOF
 }
 
 usage_run() {
-  cat <<'EOF'
-Usage: codexctl run [options]
+  cat <<EOF
+Usage: $CLI_NAME run [options]
 
 Options:
-  --name NAME     Container name (default: codex-<dir>)
-  --image NAME    Image to use (default: codex)
+  --name NAME     Container name (default: agent-<dir>)
+  --image NAME    Image to use (default: agent-plain)
   --workdir PATH  Host directory to mount at /workdir (default: cwd)
   --profile NAME  Codex profile to use (default: gpt-oss)
   --openai        Use OpenAI mode (device auth)
@@ -496,12 +535,24 @@ Options:
 EOF
 }
 
-usage_upgrade() {
-  cat <<'EOF'
-Usage: codexctl upgrade [options]
+usage_refresh() {
+  cat <<EOF
+Usage: $CLI_NAME refresh [options]
 
 Options:
-  --name NAME         Container name (default: codex-<dir>)
+  --name NAME  Container name (default: agent-<dir>)
+
+Refresh updates agentctl-managed files in an existing container without
+recreating it. It preserves user-installed packages and other mutable state.
+EOF
+}
+
+usage_upgrade() {
+  cat <<EOF
+Usage: $CLI_NAME upgrade [options]
+
+Options:
+  --name NAME         Container name (default: agent-<dir>)
   --image NAME        Image to use for recreation (default: existing container image)
   --cpu NUM           CPU cores for recreated container (default: preserve existing setting)
   --mem SIZE          Memory limit for recreated container (default: preserve existing setting)
@@ -511,58 +562,70 @@ Options:
 EOF
 }
 
-usage_auth() {
-  cat <<'EOF'
-Usage: codexctl auth [options]
+usage_system_manifest() {
+  cat <<EOF
+Usage: $CLI_NAME system-manifest [options]
 
 Options:
-  --name NAME   Auth container name (default: codex-openai-auth-<dir>)
-  --image NAME  Image to use (default: codex)
+  --name NAME  Container name (default: agent-<dir>)
+
+Print the machine-readable system package manifest from the container via
+\`agent.sh system manifest\`.
+EOF
+}
+
+usage_auth() {
+  cat <<EOF
+Usage: $CLI_NAME auth [options]
+
+Options:
+  --name NAME   Auth container name (default: agent-openai-auth-<dir>)
+  --image NAME  Image to use (default: agent-plain)
 EOF
 }
 
 usage_exec() {
-  cat <<'EOF'
-Usage: codexctl exec [options] [command...]
+  cat <<EOF
+Usage: $CLI_NAME exec [options] [command...]
 
 Options:
-  --name NAME  Container name (default: codex-<dir>)
+  --name NAME  Container name (default: agent-<dir>)
 
 If no command is provided, exec runs the default shell.
 EOF
 }
 
 usage_su_exec() {
-  cat <<'EOF'
-Usage: codexctl su-exec [options] [command...]
+  cat <<EOF
+Usage: $CLI_NAME su-exec [options] [command...]
 
 Options:
-  --name NAME  Container name (default: codex-<dir>)
+  --name NAME  Container name (default: agent-<dir>)
 
 If no command is provided, su-exec runs the default shell as root.
 EOF
 }
 
 usage_simple_name() {
-  cat <<'EOF'
-Usage: codexctl <start|stop|restart|rm> [--name NAME]
+  cat <<EOF
+Usage: $CLI_NAME <start|stop|restart|rm> [--name NAME]
 EOF
 }
 
 usage_images() {
-  cat <<'EOF'
-Usage: codexctl images [options]
-       codexctl images prune [options]
-       codexctl images rm [options]
+  cat <<EOF
+Usage: $CLI_NAME images [options]
+       $CLI_NAME images prune [options]
+       $CLI_NAME images rm [options]
 
 Commands:
-  prune        Remove old timestamp-tagged Codex images
-  rm           Remove all refs for one Codex image family or backup image
+  prune        Remove old timestamp-tagged agent images
+  rm           Remove all refs for one agent image family or backup image
 
 Options for `images`:
-  --image NAME  Codex image family, custom codex-* image, or a backup base/image
+  --image NAME  Agent image family, custom agent-* image, legacy codex-* image, or a backup base/image
   --backup      Show only backup image refs
-  --all         Include non-Codex images
+  --all         Include non-agent images
   --latest      Show only stable tags and newest timestamp tag per family
 
 Options for `images prune`:
@@ -579,8 +642,8 @@ EOF
 }
 
 usage_images_prune() {
-  cat <<'EOF'
-Usage: codexctl images prune [options]
+  cat <<EOF
+Usage: $CLI_NAME images prune [options]
 
 Options:
   --keep N      Keep the newest N timestamp tags per family (default: 1)
@@ -591,11 +654,11 @@ EOF
 }
 
 usage_images_rm() {
-  cat <<'EOF'
-Usage: codexctl images rm [options]
+  cat <<EOF
+Usage: $CLI_NAME images rm [options]
 
 Options:
-  --image NAME  Remove one image family, custom codex-* image, or backup base/image
+  --image NAME  Remove one image family, custom agent-* image, or backup base/image
   --backup      Remove only backup image refs
   --dry-run     Print images that would be deleted
 EOF
@@ -1053,6 +1116,10 @@ build_cmd() {
     esac
   done
 
+  if [ -n "$image" ]; then
+    image="$(image_family_preferred "$image")"
+  fi
+
   require_container
   if [ "$rebuild" -eq 1 ]; then
     no_cache="--no-cache"
@@ -1072,18 +1139,20 @@ build_cmd() {
     echo "Base image not removed (may not exist or command unsupported): $name" >&2
   }
 
-  is_local_codex_build_image() {
+  is_local_agent_build_image() {
     case "$1" in
-      codex|codex-*) return 0 ;;
+      agent-plain|agent-python|agent-swift|agent-office|agent-*) return 0 ;;
+      codex|codex-python|codex-swift|codex-office) return 0 ;;
       *) return 1 ;;
     esac
   }
 
   dockerfile_name_for_image() {
     local name="$1"
+    name="$(image_family_preferred "$name")"
     case "$name" in
-      codex) echo "DockerFile" ;;
-      codex-*) echo "DockerFile.${name#codex-}" ;;
+      agent|agent-plain) echo "DockerFile" ;;
+      agent-*) echo "DockerFile.${name#agent-}" ;;
       *) return 1 ;;
     esac
   }
@@ -1098,8 +1167,11 @@ build_cmd() {
   local_image_for_dockerfile_name() {
     local file_name="$1"
     case "$file_name" in
-      DockerFile) echo "codex" ;;
-      DockerFile.*) echo "codex-${file_name#DockerFile.}" ;;
+      DockerFile) echo "agent-plain" ;;
+      DockerFile.python) echo "agent-python" ;;
+      DockerFile.swift) echo "agent-swift" ;;
+      DockerFile.office) echo "agent-office" ;;
+      DockerFile.*) echo "agent-${file_name#DockerFile.}" ;;
       *) return 1 ;;
     esac
   }
@@ -1123,7 +1195,7 @@ build_cmd() {
       [ -f "$file_path" ] || continue
       file_name="$(basename "$file_path")"
       case "$file_name" in
-        DockerFile|DockerFile.*)
+        DockerFile|DockerFile.python|DockerFile.swift)
           image_name="$(local_image_for_dockerfile_name "$file_name" || true)"
           [ -n "$image_name" ] && printf '%s\n' "$image_name"
           ;;
@@ -1150,6 +1222,9 @@ build_cmd() {
     local base
     base="$(base_image_from_file "$file")"
     if [ -n "$base" ]; then
+      base="$(image_family_preferred "$base")"
+    fi
+    if [ -n "$base" ]; then
       if local_dockerfile_exists_for_image "$base"; then
         echo "Skipping base image removal for local image: $base"
         return 0
@@ -1162,6 +1237,9 @@ build_cmd() {
     local file="$1"
     local base
     base="$(base_image_from_file "$file")"
+    if [ -n "$base" ]; then
+      base="$(image_family_preferred "$base")"
+    fi
     if [ -n "$base" ]; then
       if local_dockerfile_exists_for_image "$base"; then
         echo "Skipping base image pull for local image: $base"
@@ -1195,7 +1273,7 @@ build_cmd() {
     if list_has_line "$build_visiting_lines" "$name"; then
       die "Cyclic local image dependency detected while resolving $name"
     fi
-    if ! is_local_codex_build_image "$name"; then
+    if ! is_local_agent_build_image "$name"; then
       die "Unknown image: $name"
     fi
 
@@ -1210,7 +1288,10 @@ build_cmd() {
 
     build_visiting_lines="${build_visiting_lines}${name}"$'\n'
     base="$(base_image_from_file "$file_path")"
-    if [ -n "$base" ] && is_local_codex_build_image "$base"; then
+    if [ -n "$base" ]; then
+      base="$(image_family_preferred "$base")"
+    fi
+    if [ -n "$base" ] && is_local_agent_build_image "$base"; then
       if ! local_dockerfile_exists_for_image "$base"; then
         base_file="$(dockerfile_name_for_image "$base" || true)"
         die "Missing local base image definition for $name: expected $base_file because $file_path uses FROM $base"
@@ -1227,6 +1308,7 @@ build_cmd() {
     local file
     local file_path
     local context="$SCRIPT_DIR"
+    name="$(image_family_preferred "$name")"
     local versioned_name="${name}:${build_stamp}"
     local base=""
     file="$(dockerfile_name_for_image "$name")"
@@ -1248,6 +1330,9 @@ build_cmd() {
     fi
     if [ "$rebuild" -eq 1 ] && [ "$pull_base" -eq 0 ] && [ "$refresh_base" -eq 0 ]; then
       base="$(base_image_from_file "$file_path")"
+      if [ -n "$base" ]; then
+        base="$(image_family_preferred "$base")"
+      fi
       if [ -n "$base" ] && ! local_dockerfile_exists_for_image "$base"; then
         echo "Note: --rebuild disables layer cache but does not refresh remote base image tags."
         echo "      Use --pull-base (preferred) or --refresh-base to update $base."
@@ -1422,7 +1507,7 @@ container_auth_info() {
 sync_openai_auth_to_container() {
   local name="$1"
   if ! ensure_keychain; then
-    die "Missing OpenAI auth in Keychain. Run: codexctl auth"
+    die "Missing OpenAI auth in Keychain. Run: ${CLI_NAME} auth"
   fi
   local keychain_info
   local keychain_token
@@ -1430,7 +1515,7 @@ sync_openai_auth_to_container() {
   keychain_info="$(keychain_auth_info)"
   IFS=$'\t' read -r keychain_token keychain_refresh <<<"$keychain_info"
   if [ -z "$keychain_token" ]; then
-    die "Keychain auth missing refresh_token. Run: codexctl auth"
+    die "Keychain auth missing refresh_token. Run: ${CLI_NAME} auth"
   fi
   local container_info
   local container_token
@@ -1477,6 +1562,101 @@ sync_openai_auth_from_container() {
   fi
   echo "Updating Keychain auth from $name" >&2
   "$KEYCHAIN_SCRIPT" store-from-container "$name"
+}
+
+refresh_container_file() {
+  local name="$1"
+  local source="$2"
+  local target="$3"
+  local owner="${4:-root:root}"
+  local mode="${5:-644}"
+  local dir
+
+  [ -f "$source" ] || die "Refresh source not found: $source"
+  dir="$(dirname "$target")"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "mkdir -p '$dir'"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "cat > '$target'" <"$source"
+  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "chmod $mode '$target' && chown $owner '$target'"
+}
+
+refresh_cmd() {
+  local name=""
+  local was_running=0
+  local started_for_refresh=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_refresh; return 0 ;;
+      *) die "Unknown option for refresh: $1" ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    echo "Starting container for refresh: $name" >&2
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_refresh=1
+  fi
+
+  refresh_container_file "$name" "$SCRIPT_DIR/agent.sh" "/usr/local/bin/agent.sh" "root:root" "755"
+  refresh_container_file "$name" "$SCRIPT_DIR/config.toml" "/etc/agentctl/config.toml" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/local_models.json" "/etc/agentctl/local_models.json" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/config.toml" "/etc/codexctl/config.toml" "root:root" "644"
+  refresh_container_file "$name" "$SCRIPT_DIR/local_models.json" "/etc/codexctl/local_models.json" "root:root" "644"
+  if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -x /usr/local/bin/agent.sh; then
+    "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" /usr/local/bin/agent.sh refresh >/dev/null 2>&1 || true
+  fi
+
+  if [ "$started_for_refresh" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    echo "Stopping container: $name" >&2
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
+  echo "Refresh complete: $name" >&2
+}
+
+system_manifest_cmd() {
+  local name=""
+  local was_running=0
+  local started_for_manifest=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_system_manifest; return 0 ;;
+      *) die "Unknown option for system-manifest: $1" ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+  if ! container_exists "$name"; then
+    die "Container not found: $name"
+  fi
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null
+    started_for_manifest=1
+  fi
+
+  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" /usr/local/bin/agent.sh system manifest
+
+  if [ "$started_for_manifest" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null
+  fi
 }
 
 run_container() {
@@ -1602,12 +1782,14 @@ run_mode() {
   local -a cmd_override=("$@")
   local pre_exec=""
   local post_exec=""
-  local cmd=("${DEFAULT_CODEX_CMD[@]}" --profile "$profile" --cd /workdir)
+  local runtime_mode="local-model"
+  local cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec /usr/local/bin/agent.sh run --cd /workdir" sh "$runtime_mode" "$profile")
 
   if [ "$openai" -eq 1 ]; then
+    runtime_mode="openai"
     pre_exec="openai_pre_exec"
     post_exec="openai_post_exec"
-    cmd=("${DEFAULT_CODEX_CMD[@]}" --cd /workdir)
+    cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec /usr/local/bin/agent.sh run --cd /workdir" sh "$runtime_mode" "$profile")
     if [ "$auth" -eq 1 ] || ! ensure_keychain; then
       run_auth_flow "$image" "$(default_name "$AUTH_NAME_PREFIX")"
     fi
@@ -1972,11 +2154,12 @@ run_cmd() {
   workdir="$(CDPATH= cd -- "$workdir" && pwd)"
 
   [ -n "$image" ] || image="$DEFAULT_IMAGE"
+  image="$(image_ref_for_runtime "$image")"
   if [ -z "$name" ] && [ "$temp" -eq 0 ]; then
     name="$(default_name "$DEFAULT_NAME_PREFIX" "$workdir")"
   fi
   if [ "$temp" -eq 0 ] && [ -n "$name" ] && container_exists "$name" && { [ -n "$cpu" ] || [ -n "$mem" ]; }; then
-    die "--cpu and --mem only apply when creating a new container. Use codexctl upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
+    die "--cpu and --mem only apply when creating a new container. Use ${CLI_NAME} upgrade --name $name${image:+ --image $image}${cpu:+ --cpu $cpu}${mem:+ --mem $mem} to recreate the container with updated resources"
   fi
 
   run_mode "$name" "$image" "$temp" "$shell" "$openai" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" "$profile" ${cmd_override[@]+"${cmd_override[@]}"}
@@ -1999,6 +2182,7 @@ auth_cmd() {
   if [ -z "$name" ]; then
     name="$(default_name "$AUTH_NAME_PREFIX")"
   fi
+  image="$(image_ref_for_runtime "$image")"
   run_auth_flow "$image" "$name"
   echo "Auth updated. Restart any running --openai containers to pick up the new token." >&2
 }
@@ -2062,6 +2246,7 @@ upgrade_cmd() {
   fi
 
   [ -n "$image" ] || image="$current_image"
+  image="$(image_ref_for_runtime "$image")"
   [ -n "$cpu" ] || cpu="$current_cpu"
   [ -n "$mem" ] || mem="$current_mem"
   image_exists "$image" || die "Image not found: $image"
@@ -2103,7 +2288,7 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config to replace ~/.codex/config.toml and ~/.codex/local_models.json and recreate ~/.codex/AGENTS.md as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use codexctl run --name $name --reset-config"
+        die "Container has ~/.codex/AGENTS.md as a regular file. Re-run with --overwrite-config to replace ~/.codex/config.toml and ~/.codex/local_models.json and recreate ~/.codex/AGENTS.md as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
       echo "Warning: replacing regular ~/.codex/AGENTS.md, ~/.codex/config.toml, and ~/.codex/local_models.json in $name due to --overwrite-config" >&2
       ;;
@@ -2113,7 +2298,7 @@ upgrade_cmd() {
           echo "Stopping container: $name" >&2
           "$CONTAINER_CMD" stop "$name" >/dev/null || true
         fi
-        die "Container has ~/.codex/AGENTS.md in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use codexctl run --name $name --reset-config"
+        die "Container has ~/.codex/AGENTS.md in a non-symlink form. Re-run with --overwrite-config to recreate it as a symlink to /etc/codexctl/image.md. If no valid AGENTS.md configuration already exists, use ${CLI_NAME} run --name $name --reset-config"
       fi
       echo "Warning: replacing non-standard ~/.codex/AGENTS.md in $name due to --overwrite-config" >&2
       ;;
@@ -2178,9 +2363,9 @@ upgrade_cmd() {
     echo "Upgrade complete: $name (backup skipped)" >&2
   fi
   echo >&2
-  echo "If no valid AGENTS.md configuration already exists, reset it with: codexctl run --name $name --reset-config" >&2
+  echo "If no valid AGENTS.md configuration already exists, reset it with: ${CLI_NAME} run --name $name --reset-config" >&2
   if [ "$no_backup" -eq 0 ]; then
-    echo "If everything works as expected, remove the backup image with: codexctl images prune --backup --image $backup_image --keep 0" >&2
+    echo "If everything works as expected, remove the backup image with: ${CLI_NAME} images prune --backup --image $backup_image --keep 0" >&2
   fi
 }
 
@@ -2294,7 +2479,7 @@ ls_cmd() {
       image = $2
       sub(/^.*\//, "", image)
       sub(/[:@].*$/, "", image)
-      if (image ~ /^codex([[:alnum:]_.-]*|$)/) {
+      if (image ~ /^(agent|codex)([[:alnum:]_.-]*|$)/) {
         print
       }
     }
@@ -2305,6 +2490,8 @@ cmd="${1:-}"
 case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
+  refresh) shift; refresh_cmd "$@" ;;
+  system-manifest) shift; system_manifest_cmd "$@" ;;
   upgrade) shift; upgrade_cmd "$@" ;;
   auth) shift; auth_cmd "$@" ;;
   exec) shift; exec_cmd "$@" ;;

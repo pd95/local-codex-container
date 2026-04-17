@@ -21,7 +21,7 @@ load_codexctl_functions() {
 }
 
 test_run_profile_wires_selected_profile() {
-  begin_test "run_cmd wires --profile into the launched codex command"
+  begin_test "run_cmd wires --profile into the launched agent.sh command"
 
   load_codexctl_functions
 
@@ -42,15 +42,53 @@ test_run_profile_wires_selected_profile() {
   run_cmd --name unit-test-container --workdir "$workdir" --profile gemma
 
   [ "$captured_pre_exec" = "local_model_pre_exec" ] || fail "Expected local_model_pre_exec, got: $captured_pre_exec"
-  printf '%s\n' "$captured_cmd" | grep -Fxq 'codex --profile gemma --cd /workdir' || fail "Expected codex command to include --profile gemma, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_RUN_MODE=' || fail "Expected agent.sh launch wrapper, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_DEFAULT_PROFILE=' || fail "Expected profile to be passed to agent.sh, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq '/usr/local/bin/agent.sh run --cd /workdir' || fail "Expected agent.sh run launch path, got: $captured_cmd"
 }
 
 test_run_help_reports_profile_default() {
   begin_test "run help reports the actual default profile"
 
-  run_capture "$CODEXCTL" run --help
+  run_capture "$AGENTCTL" run --help
   assert_status 0
   assert_contains "--profile NAME  Codex profile to use (default: gpt-oss)"
+}
+
+test_agentctl_wrapper_usage_banner() {
+  begin_test "agentctl wrapper prints its command name"
+
+  run_capture "$AGENTCTL" --help
+  assert_status 0
+  assert_contains "Usage: agentctl <command> [options]"
+}
+
+test_refresh_help_reports_new_command() {
+  begin_test "refresh help is available via the public CLI"
+
+  run_capture "$AGENTCTL" refresh --help
+  assert_status 0
+  assert_contains "Usage: agentctl refresh [options]"
+}
+
+test_system_manifest_help_reports_new_command() {
+  begin_test "system-manifest help is available via the public CLI"
+
+  run_capture "$AGENTCTL" system-manifest --help
+  assert_status 0
+  assert_contains "Usage: agentctl system-manifest [options]"
+}
+
+test_image_ref_for_runtime_falls_back_to_legacy_when_present() {
+  begin_test "image_ref_for_runtime prefers canonical names but falls back to legacy refs"
+
+  load_codexctl_functions
+
+  image_exists() {
+    [ "$1" = "codex" ]
+  }
+
+  [ "$(image_ref_for_runtime codex)" = "codex" ] || fail "Expected fallback to legacy codex image"
 }
 
 test_ls_filters_non_codex_containers() {
@@ -137,7 +175,7 @@ set -euo pipefail
 if [ "${1:-}" = "ls" ] && [ "${2:-}" = "-a" ]; then
   cat <<'OUT'
 ID                               IMAGE
-unit-test-container              codex:latest
+unit-test-container              agent-plain:latest
 OUT
   exit 0
 fi
@@ -148,10 +186,10 @@ EOF
 
   PATH="$fake_dir:$old_path"
 
-  run_capture "$CODEXCTL" run --name unit-test-container --workdir "$TEST_ROOT" --cpu 4 --mem 8G --cmd true
+  run_capture "$AGENTCTL" run --name unit-test-container --workdir "$TEST_ROOT" --cpu 4 --mem 8G --cmd true
   assert_status 1
   assert_contains "Error: --cpu and --mem only apply when creating a new container."
-  assert_contains "codexctl upgrade --name unit-test-container --image $DEFAULT_IMAGE --cpu 4 --mem 8G"
+  assert_contains "agentctl upgrade --name unit-test-container --image $DEFAULT_IMAGE --cpu 4 --mem 8G"
 }
 
 test_upgrade_uses_explicit_resource_overrides() {
@@ -220,6 +258,94 @@ test_upgrade_uses_explicit_resource_overrides() {
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
 }
 
+test_refresh_updates_managed_files_without_recreate() {
+  begin_test "refresh updates managed files and preserves stopped state"
+
+  load_codexctl_functions
+
+  local start_calls=0
+  local stop_calls=0
+  local exec_log=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      exec)
+        shift
+        if [ "$1" = "-u" ]; then
+          shift 2
+        fi
+        if [ "$1" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 5
+        fi
+        exec_log="${exec_log}$(printf '%s\n' "$*")"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture refresh_cmd --name unit-test-container
+  assert_status 0
+  assert_contains "Refresh complete: unit-test-container"
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+  printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/config.toml" || fail "Expected refresh to update /etc/agentctl/config.toml"
+  printf '%s\n' "$exec_log" | grep -Fq "/etc/codexctl/config.toml" || fail "Expected refresh to update /etc/codexctl/config.toml"
+  printf '%s\n' "$exec_log" | grep -Fq "/usr/local/bin/agent.sh" || fail "Expected refresh to update agent.sh"
+}
+
+test_system_manifest_starts_stopped_container_and_restores_state() {
+  begin_test "system-manifest starts a stopped container and restores stopped state"
+
+  load_codexctl_functions
+
+  local start_calls=0
+  local stop_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      exec)
+        printf '{"package_manager":"apk","packages":["bash"]}\n'
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture system_manifest_cmd --name unit-test-container
+  assert_status 0
+  assert_contains '"package_manager":"apk"'
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+}
+
 test_cleanup_temp_dir_handles_read_only_trees() {
   begin_test "cleanup_temp_dir removes read-only extracted trees"
 
@@ -240,14 +366,21 @@ test_cleanup_temp_dir_handles_read_only_trees() {
 }
 
 main() {
-  log "Using codexctl at $CODEXCTL"
+  log "Using agentctl at $AGENTCTL"
+  log "Using codexctl implementation at $CODEXCTL"
 
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
+  test_agentctl_wrapper_usage_banner
+  test_refresh_help_reports_new_command
+  test_system_manifest_help_reports_new_command
+  test_image_ref_for_runtime_falls_back_to_legacy_when_present
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check
   test_run_rejects_resource_flags_for_existing_container
   test_upgrade_uses_explicit_resource_overrides
+  test_refresh_updates_managed_files_without_recreate
+  test_system_manifest_starts_stopped_container_and_restores_state
   test_cleanup_temp_dir_handles_read_only_trees
 
   log "PASS: all shell unit tests completed"

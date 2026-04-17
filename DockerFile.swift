@@ -51,10 +51,17 @@ RUN groupadd coder \
  && chown -R coder:coder /home/coder /workdir
 
 # Make sure HOME is correct for subsequent RUNs when we switch user
-ENV HOME=/home/coder
+ENV HOME=/home/coder \
+    IMAGE_NAME=agent-swift
 
 # Copy Codex default configuration and local model metadata config
 COPY --chown=coder:coder config.toml local_models.json /home/coder/.codex/
+
+# Install the generic Phase 1 runtime launcher
+COPY agent.sh /usr/local/bin/agent.sh
+RUN chmod 0755 /usr/local/bin/agent.sh \
+ && mkdir -p /etc/agentctl \
+ && printf '%s\n' codex > /etc/agentctl/preferred-runtime
 
 # Swiftly paths (user-owned, so codex can install toolchains later if needed)
 ENV SWIFTLY_HOME_DIR=/home/coder/.swiftly
@@ -64,11 +71,12 @@ ENV PATH=/home/coder/.local/bin:$PATH
 RUN mkdir -p /home/coder/.local/bin /home/coder/.swiftly \
  && chown -R coder:coder /home/coder/.local /home/coder/.swiftly
 
-RUN mkdir -p /etc/codexctl \
+RUN mkdir -p /etc/codexctl /etc/agentctl \
  && cp /home/coder/.codex/config.toml /home/coder/.codex/local_models.json /etc/codexctl/ \
+ && cp /home/coder/.codex/config.toml /home/coder/.codex/local_models.json /etc/agentctl/ \
  && BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
  && cat > /etc/codexctl/image.md <<EOF
-You are running inside the \`codex-swift\` image.
+You are running inside the \`agent-swift\` image.
 
 Environment:
 - containerized Ubuntu-based Linux (package manager \`apt-get\`, package tools \`dpkg\`)
@@ -77,11 +85,12 @@ Environment:
 - architecture: check with \`uname -m\` if needed
 
 Image metadata:
-- image: \`codex-swift\`
+- image: \`agent-swift\`
 - built_at_utc: \`${BUILD_TIME}\`
 
 Built-in CLI tools:
 - base tools: \`bash\`, \`zsh\`, \`curl\`, \`file\`, \`jq\`, \`rg\`, \`bwrap\`
+- control tools: \`agent.sh\`
 - programming tools: \`node\`, \`npm\`, \`make\`, \`python\`, \`swift\`, \`swift-format\`, \`swiftly\`, plus the wrapper commands \`format\` and \`lint\`
 
 Programming environments:
@@ -91,6 +100,7 @@ Programming environments:
 
 Assume Linux Swift toolchains and Linux build behavior. Do not assume access to macOS, Xcode, iOS SDKs, or Apple simulator frameworks inside this container.
 EOF
+RUN ln -sf /etc/codexctl/image.md /etc/agentctl/image.md
 RUN ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md
 
 # From here on, run as coder so swiftly writes user-owned files
@@ -115,4 +125,4 @@ RUN git config --global user.email "codex@localhost" \
 
 # Hardened entrypoint
 ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
-CMD ["codex","--profile","gpt-oss"]
+CMD ["/usr/local/bin/agent.sh","run"]
