@@ -30,6 +30,8 @@ run_agent_sh_capture() {
     PATH="$PATH" \
     AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
     AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    AGENTCTL_FEATURE_REGISTRY_DIR="$TEST_ROOT/features.d" \
+    AGENTCTL_FEATURE_ADAPTER_DIR="$TEST_ROOT/features" \
     "$TEST_ROOT/agent.sh" "$@"
 }
 
@@ -331,6 +333,14 @@ test_runtime_help_reports_new_command() {
   assert_contains "Usage: agentctl runtime <list|info|capabilities|install|update|reset-config> [options] [runtime]"
 }
 
+test_feature_help_reports_new_command() {
+  begin_test "feature help is available via the public CLI"
+
+  run_capture "$AGENTCTL" feature --help
+  assert_status 0
+  assert_contains "Usage: agentctl feature <list|info|install|remove|update> [options] [feature]"
+}
+
 test_use_help_reports_new_command() {
   begin_test "use help is available via the public CLI"
 
@@ -357,6 +367,42 @@ test_agent_sh_runtime_info_reports_registry_metadata() {
   run_agent_sh_capture "$temp_home" runtime info codex
   assert_status 0
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global" and .default_config_dir == "/etc/codexctl" and (.auth_formats | index("json_refresh_token") != null)' >/dev/null || fail "Expected runtime info JSON for codex, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_feature_list_reports_declared_features() {
+  begin_test "agent.sh feature list reports declared features"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" feature list
+  assert_status 0
+  assert_contains "office"
+}
+
+test_agent_sh_feature_info_reports_manifest_metadata() {
+  begin_test "agent.sh feature info reports manifest metadata"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" feature info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .display_name == "Office Compatibility Tooling" and .installed == false and .capabilities.install == false' >/dev/null || fail "Expected feature info JSON for office, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_feature_install_rejects_unimplemented_feature() {
+  begin_test "agent.sh feature install rejects unsupported feature install"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" feature install office
+  assert_status 1
+  assert_contains "feature does not support install: office"
 }
 
 test_agent_sh_runtime_list_reports_installed_runtimes_only() {
@@ -1016,6 +1062,7 @@ EOF
   assert_status 0
   grep -Fq "file $SCRIPT_DIR/agent.sh -> /usr/local/bin/agent.sh" "$refresh_log_file" || fail "Expected auth container refresh of agent.sh"
   grep -Fq "tree $SCRIPT_DIR/runtimes.d -> /etc/agentctl/runtimes.d" "$refresh_log_file" || fail "Expected auth container refresh of runtime manifests"
+  grep -Fq "tree $SCRIPT_DIR/features.d -> /etc/agentctl/features.d" "$refresh_log_file" || fail "Expected auth container refresh of feature manifests"
   grep -Fq 'bash /usr/local/bin/agent.sh runtime info codex' "$exec_log_file" || fail "Expected runtime info inspection before auth flow"
   grep -Fq 'bash -lc exec bash /usr/local/bin/agent.sh auth login codex' "$exec_log_file" || fail "Expected auth login via agent.sh"
   grep -Fq 'bash /usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
@@ -1611,6 +1658,8 @@ test_refresh_updates_managed_files_without_recreate() {
   printf '%s\n' "$exec_log" | grep -Fq "/usr/local/bin/agent.sh" || fail "Expected refresh to update agent.sh"
   printf '%s\n' "$exec_log" | grep -Fq "/usr/local/lib/agentctl/runtimes" || fail "Expected refresh to update runtime adapters"
   printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/runtimes.d" || fail "Expected refresh to update runtime registry"
+  printf '%s\n' "$exec_log" | grep -Fq "/usr/local/lib/agentctl/features" || fail "Expected refresh to update feature adapters"
+  printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/features.d" || fail "Expected refresh to update feature registry"
 }
 
 test_refresh_container_file_streams_source_via_stdin() {
@@ -1836,9 +1885,13 @@ main() {
   test_refresh_help_reports_new_command
   test_system_manifest_help_reports_new_command
   test_runtime_help_reports_new_command
+  test_feature_help_reports_new_command
   test_use_help_reports_new_command
   test_rm_help_reports_force_option
   test_agent_sh_runtime_info_reports_registry_metadata
+  test_agent_sh_feature_list_reports_declared_features
+  test_agent_sh_feature_info_reports_manifest_metadata
+  test_agent_sh_feature_install_rejects_unimplemented_feature
   test_agent_sh_runtime_list_reports_installed_runtimes_only
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_claude_runtime_info_reports_skeleton_metadata

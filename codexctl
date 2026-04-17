@@ -496,6 +496,7 @@ Commands:
   build      Build agent images
   run        Create/start a container for the current directory
   runtime    Manage coding runtimes inside an existing container
+  feature    Manage installable feature packs inside an existing container
   use        Select the preferred runtime for an existing container
   refresh    Refresh agentctl-managed files in an existing container
   system-manifest  Print a container package manifest
@@ -587,6 +588,19 @@ Examples:
   $CLI_NAME runtime list
   $CLI_NAME runtime info codex
   $CLI_NAME runtime install codex
+EOF
+}
+
+usage_feature() {
+  cat <<EOF
+Usage: $CLI_NAME feature <list|info|install|remove|update> [options] [feature]
+
+Options:
+  --name NAME  Container name (default: agent-<dir>)
+
+Examples:
+  $CLI_NAME feature list
+  $CLI_NAME feature info office
 EOF
 }
 
@@ -1479,6 +1493,8 @@ run_auth_flow() {
   refresh_container_file "$auth_name" "$SCRIPT_DIR/agentctl-path.sh" "/etc/profile.d/agentctl-path.sh" "root:root" "644"
   refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
   refresh_container_tree "$auth_name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/features" "/usr/local/lib/agentctl/features" "root:root" "644" "755"
+  refresh_container_tree "$auth_name" "$SCRIPT_DIR/features.d" "/etc/agentctl/features.d" "root:root" "644" "755"
   runtime_info="$("$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime info "$runtime")" || die "Failed to inspect runtime auth contract: $runtime"
   if ! printf '%s' "$runtime_info" | jq -e '.installed == true' >/dev/null; then
     if printf '%s' "$runtime_info" | jq -e '(.capabilities.install // false) == true' >/dev/null; then
@@ -1911,6 +1927,8 @@ refresh_cmd() {
   refresh_container_file "$name" "$SCRIPT_DIR/agentctl-path.sh" "/etc/profile.d/agentctl-path.sh" "root:root" "644"
   refresh_container_tree "$name" "$SCRIPT_DIR/runtimes" "/usr/local/lib/agentctl/runtimes" "root:root" "644" "755"
   refresh_container_tree "$name" "$SCRIPT_DIR/runtimes.d" "/etc/agentctl/runtimes.d" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features" "/usr/local/lib/agentctl/features" "root:root" "644" "755"
+  refresh_container_tree "$name" "$SCRIPT_DIR/features.d" "/etc/agentctl/features.d" "root:root" "644" "755"
   if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -x /usr/local/bin/agent.sh; then
     "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh refresh >/dev/null 2>&1 || true
   fi
@@ -1993,6 +2011,50 @@ runtime_cmd() {
       ;;
     *)
       die "Unknown runtime command: $subcommand"
+      ;;
+  esac
+}
+
+feature_cmd() {
+  local name=""
+  local subcommand=""
+  local feature=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --help) usage_feature; return 0 ;;
+      *)
+        if [ -z "$subcommand" ]; then
+          subcommand="$1"
+        elif [ -z "$feature" ]; then
+          feature="$1"
+        else
+          die "Unexpected argument for feature: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  require_container
+  if [ -z "$name" ]; then
+    name="$(default_name "$DEFAULT_NAME_PREFIX")"
+  fi
+
+  case "$subcommand" in
+    list)
+      run_agent_sh_in_container "$name" feature list
+      ;;
+    info|install|remove|update)
+      [ -n "$feature" ] || die "Missing feature for $subcommand"
+      run_agent_sh_in_container "$name" feature "$subcommand" "$feature"
+      ;;
+    "")
+      usage_feature
+      ;;
+    *)
+      die "Unknown feature command: $subcommand"
       ;;
   esac
 }
@@ -2966,6 +3028,7 @@ case "$cmd" in
   build) shift; build_cmd "$@" ;;
   run) shift; run_cmd "$@" ;;
   runtime) shift; runtime_cmd "$@" ;;
+  feature) shift; feature_cmd "$@" ;;
   use) shift; use_cmd "$@" ;;
   refresh) shift; refresh_cmd "$@" ;;
   system-manifest) shift; system_manifest_cmd "$@" ;;

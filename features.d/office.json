@@ -1,0 +1,15 @@
+{
+  "id": "office",
+  "display_name": "Office Compatibility Tooling",
+  "install_method": "planned-feature-pack",
+  "description": "Future replacement for the legacy agent-office image.",
+  "capabilities": {
+    "install": false,
+    "remove": false,
+    "update": false
+  },
+  "commands": [
+    "feature list",
+    "feature info office"
+  ]
+}

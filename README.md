@@ -144,6 +144,10 @@ agentctl runtime info codex
 agentctl runtime install codex
 agentctl use codex
 
+# Inspect installable feature packs in an existing container
+agentctl feature list
+agentctl feature info office
+
 # Recreate a container from the latest image while preserving config
 agentctl refresh
 
@@ -177,10 +181,12 @@ agentctl run --cmd bash
 - `agentctl run --update` upgrades `@openai/codex` inside the target container before starting. If the container does not exist yet, it is created first. With `--temp`, the update is ephemeral; `agentctl build --rebuild` remains the persistent way to refresh image content.
 - `agentctl runtime list` shows installed runtimes in the current container. `agentctl runtime info <runtime>` and `agentctl runtime capabilities <runtime>` query the in-container `agent.sh` runtime contract for a declared runtime, including explicit capability booleans and supported auth formats. The current branch fully wires `codex` and now also ships a real Claude install/update/reset-config/auth adapter.
 - Runtime metadata now lives under `/etc/agentctl/runtimes.d`, and runtime-specific handlers live under `/usr/local/lib/agentctl/runtimes`. `agentctl refresh` updates those directories in-place for existing containers.
+- Feature-pack metadata now lives under `/etc/agentctl/features.d`, and feature-pack handlers live under `/usr/local/lib/agentctl/features`. `agentctl refresh` updates those directories in-place for existing containers too.
 - `agentctl runtime install codex` installs or refreshes the Codex runtime inside an existing container and marks it as preferred for that container.
 - `agentctl runtime install claude` now runs the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`) and, on Alpine, expects `libgcc`, `libstdc++`, and `ripgrep` to be present first.
 - `agentctl runtime update claude` now runs `claude update`.
 - `agentctl runtime reset-config claude` restores a default `~/.claude/settings.json` with `USE_BUILTIN_RIPGREP=0`.
+- `agentctl feature list` and `agentctl feature info office` now expose the first feature-pack contract surface. The initial `office` feature is a manifest/adapter stub that documents the replacement path for `agent-office`; it is not yet a full installable feature pack.
 - refreshed and rebuilt containers now ship `/etc/profile.d/agentctl-path.sh`, so bash login shells prepend `~/.local/bin` to `PATH` and native Claude installs are available as `claude` without manual shell edits.
 - `agentctl use codex` updates the container-local preferred runtime without changing the default image selection used by `agentctl run`.
 - `agentctl run` is now runtime-neutral at the host layer. Codex still starts with its default `--cd /workdir` behavior, but that default now lives in the Codex runtime adapter instead of being forced on every runtime.
