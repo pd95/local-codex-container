@@ -170,9 +170,9 @@ agentctl run --cmd bash
 - `agentctl runtime install codex` installs or refreshes the Codex runtime inside an existing container and marks it as preferred for that container.
 - `agentctl use codex` updates the container-local preferred runtime without changing the default image selection used by `agentctl run`.
 - `--cpu` and `--mem` on `agentctl run` only apply when creating a new container. If the named container already exists, `agentctl run` fails fast and tells you to use `agentctl refresh` instead of silently ignoring the resource request.
-- `agentctl refresh` is the normal non-destructive update path for an existing named container. By default it exports the current container to a backup image, preserves `/home/coder/.codex`, recreates the container from the selected image, restores the saved config, and returns the container to its previous running or stopped state. It also accepts `--cpu` and `--mem` when you want to change the recreated container's resource limits alongside an image change or on their own. Use `--no-backup` only when you intentionally want a cleanup-friendly refresh without keeping that recovery image.
-- If an older container has `~/.codex/AGENTS.md` as a regular file instead of the expected symlink to `/etc/codexctl/image.md`, `agentctl refresh` stops and asks you to re-run with `--overwrite-config`. You can also reset image-owned defaults, including `local_models.json`, with `agentctl run --name <container> --reset-config`.
-- After a successful `agentctl refresh`, the command prints the backup image name. Remove it later with `agentctl images prune --backup --image <backup-image> --keep 0` after you have verified the refreshed container works as expected.
+- `agentctl refresh` is the normal non-destructive update path for an existing named container. It updates `agent.sh`, the agentctl-managed default config files, runtime manifests, and runtime adapters in place, and preserves the container's running or stopped state.
+- `agentctl refresh` does not recreate the container, export backup images, or touch user-installed packages. Use `agentctl upgrade` only for the heavier recreate-and-restore flow.
+- If you want to reset image-owned defaults such as `config.toml`, `local_models.json`, or the `AGENTS.md` symlink, use `agentctl run --name <container> --reset-config` or `agentctl runtime reset-config codex`.
 - Use `agentctl images rm --image <name>` when you want to remove an image family entirely, including the stable tag. This is the cleanup path for temporary custom images such as `agent-custom`.
 - Use `--rebuild`, `--refresh-base`, and `--pull-base` only for occasional refreshes when you want newer Codex or base image content. See the build cache section below for details.
 - `agentctl` was authored by Codex itself, running inside an Apple `container` in `--openai` mode.
@@ -220,14 +220,15 @@ If you want Gemma to become the default local model, either set `CODEX_PROFILE=g
 agentctl --help          # show command overview and available subcommands/options
 agentctl auth            # run device-auth and store in Keychain
 agentctl runtime list    # list runtimes known to the current container
+agentctl runtime info codex  # inspect manifest-backed runtime metadata
+agentctl runtime capabilities codex  # inspect runtime commands/capabilities
 agentctl runtime install codex  # install/refresh Codex in the current container
 agentctl use codex       # set Codex as the preferred runtime in the current container
 agentctl images          # list local agent image refs
 agentctl images --backup # list local agent backup image refs
-agentctl refresh         # recreate the current container from the latest image
-agentctl refresh --cpu 8 --mem 16G  # recreate an existing container with updated resources
-agentctl refresh --no-backup  # recreate without exporting a backup image first
-agentctl refresh --overwrite-config  # reset config.toml and local_models.json from refreshed image and recreate ~/.codex/AGENTS.md symlink
+agentctl refresh         # update agent.sh and runtime contract files in place
+agentctl run --name my-devbox --reset-config --cmd true  # restore image-owned defaults
+agentctl runtime reset-config codex  # restore Codex-owned defaults inside the current container
 agentctl images prune --backup --keep 2 --dry-run  # preview backup pruning
 agentctl exec            # shell into running container
 agentctl ls              # list managed containers (hides runtime support containers like buildkit)

@@ -120,6 +120,30 @@ test_agent_sh_runtime_info_reports_registry_metadata() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global" and .default_config_dir == "/etc/codexctl" and (.auth_formats | index("json_refresh_token") != null)' >/dev/null || fail "Expected runtime info JSON for codex, got: $RUN_OUTPUT"
 }
 
+test_agent_sh_runtime_capabilities_reports_manifest_commands() {
+  begin_test "agent.sh runtime capabilities reports manifest-backed commands"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" runtime capabilities codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and (.commands | index("runtime install codex") != null) and (.commands | index("runtime capabilities codex") != null)' >/dev/null || fail "Expected runtime capabilities JSON for codex, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_rejects_unsupported_runtime() {
+  begin_test "agent.sh rejects unsupported runtimes predictably"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" runtime info claude
+  assert_status 1
+  assert_contains "unsupported runtime: claude"
+}
+
 test_agent_sh_preferred_round_trip() {
   begin_test "agent.sh preferred set/get persists runtime selection"
 
@@ -553,6 +577,8 @@ main() {
   test_runtime_help_reports_new_command
   test_use_help_reports_new_command
   test_agent_sh_runtime_info_reports_registry_metadata
+  test_agent_sh_runtime_capabilities_reports_manifest_commands
+  test_agent_sh_rejects_unsupported_runtime
   test_agent_sh_preferred_round_trip
   test_image_ref_for_runtime_falls_back_to_legacy_when_present
   test_ls_filters_non_codex_containers

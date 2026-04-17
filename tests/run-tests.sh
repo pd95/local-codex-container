@@ -225,7 +225,7 @@ test_upgrade_overwrite_config_restores_image_defaults() {
 }
 
 test_runtime_management_commands_work_for_existing_container() {
-  begin_test "runtime list and use work for an existing container"
+  begin_test "runtime list, info, capabilities, and use work for an existing container"
   local name
   local workdir
 
@@ -239,6 +239,14 @@ test_runtime_management_commands_work_for_existing_container() {
   run_capture "$AGENTCTL" runtime --name "$name" list
   assert_status 0
   assert_contains "codex"
+
+  run_capture "$AGENTCTL" runtime --name "$name" info codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and .install_method == "npm-global" and .preferred_runtime == "codex"' >/dev/null || fail "Expected runtime info JSON for codex, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" runtime --name "$name" capabilities codex
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and (.commands | index("runtime capabilities codex") != null) and (.commands | index("runtime install codex") != null)' >/dev/null || fail "Expected runtime capabilities JSON for codex, got: $RUN_OUTPUT"
 
   run_capture "$AGENTCTL" use --name "$name" codex
   assert_status 0
@@ -310,7 +318,7 @@ main() {
   run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact"
   run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink"
   run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink"
-  run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list and use work for an existing container"
+  run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container"
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container"
   assert_selected_tests_ran
 
