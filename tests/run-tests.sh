@@ -57,6 +57,8 @@ done
 
 RUNTIME_FIXTURE_NAME=""
 RUNTIME_FIXTURE_WORKDIR=""
+FEATURE_FIXTURE_NAME=""
+FEATURE_FIXTURE_WORKDIR=""
 
 ensure_runtime_fixture() {
   if [ -n "$RUNTIME_FIXTURE_NAME" ] && container_exists "$RUNTIME_FIXTURE_NAME"; then
@@ -79,6 +81,19 @@ ensure_runtime_fixture_running() {
   fi
 
   run_capture "$AGENTCTL" start --name "$RUNTIME_FIXTURE_NAME"
+  assert_status 0
+}
+
+ensure_feature_fixture() {
+  if [ -n "$FEATURE_FIXTURE_NAME" ] && container_exists "$FEATURE_FIXTURE_NAME"; then
+    return 0
+  fi
+
+  FEATURE_FIXTURE_NAME="$(unique_name feature-fixture)"
+  FEATURE_FIXTURE_WORKDIR="$(new_workdir)"
+  register_container_cleanup "$FEATURE_FIXTURE_NAME"
+
+  run_capture "$AGENTCTL" run --name "$FEATURE_FIXTURE_NAME" --image agent-python --workdir "$FEATURE_FIXTURE_WORKDIR" --cmd true
   assert_status 0
 }
 
@@ -339,6 +354,38 @@ test_runtime_info_claude_works_after_refresh_on_stopped_container() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "native-installer" and .capabilities.install == true and .capabilities.update == true' >/dev/null || fail "Expected runtime info JSON for claude on stopped container after refresh, got: $RUN_OUTPUT"
 }
 
+test_feature_office_install_works_on_agent_python() {
+  begin_test "feature install office works on agent-python"
+  local name
+
+  ensure_feature_fixture
+  name="$FEATURE_FIXTURE_NAME"
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+  assert_contains "Refresh complete: $name"
+
+  run_capture "$AGENTCTL" feature --name "$name" list
+  assert_status 0
+  assert_contains "office"
+
+  run_capture "$AGENTCTL" feature --name "$name" info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .installed == false and .capabilities.install == true' >/dev/null || fail "Expected feature info JSON for office before install, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" feature --name "$name" install office
+  assert_status 0
+
+  run_capture "$AGENTCTL" feature --name "$name" info office
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .installed == true and .capabilities.install == true' >/dev/null || fail "Expected feature info JSON for office after install, got: $RUN_OUTPUT"
+
+  run_capture "$AGENTCTL" start --name "$name"
+  assert_status 0
+  run_capture "$AGENTCTL" exec --name "$name" -- bash -lc 'test -f /var/lib/agentctl/features/office/install-complete && test -f /etc/profile.d/node_path.sh && command -v pandoc >/dev/null && command -v tesseract >/dev/null'
+  assert_status 0
+}
+
 main() {
   require_host_prereqs
 
@@ -364,6 +411,7 @@ main() {
   run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container" smoke
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
   run_selected_test test_runtime_info_claude_works_after_refresh_on_stopped_container "runtime info claude works after refresh when the container is stopped" smoke
+  run_selected_test test_feature_office_install_works_on_agent_python "feature install office works on agent-python" full
   assert_selected_tests_ran
 
   log "PASS: all host integration tests completed"
