@@ -1419,7 +1419,14 @@ run_auth_flow() {
     fi
   }
 
+  cleanup_auth_container_on_signal() {
+    cleanup_auth_container
+    trap - EXIT INT TERM HUP
+    exit 130
+  }
+
   trap cleanup_auth_container EXIT
+  trap cleanup_auth_container_on_signal INT TERM HUP
 
   [ -x "$KEYCHAIN_SCRIPT" ] || die "Missing $KEYCHAIN_SCRIPT"
 
@@ -1445,7 +1452,8 @@ run_auth_flow() {
   runtime_info="$("$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime info "$runtime")" || die "Failed to inspect runtime auth contract: $runtime"
   if ! printf '%s' "$runtime_info" | jq -e '.installed == true' >/dev/null; then
     if printf '%s' "$runtime_info" | jq -e '(.capabilities.install // false) == true' >/dev/null; then
-      "$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime install "$runtime" >/dev/null || die "Failed to install runtime for auth flow: $runtime"
+      echo "Installing runtime in auth container: $runtime" >&2
+      "$CONTAINER_CMD" exec -it "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime install "$runtime" || die "Failed to install runtime for auth flow: $runtime"
       runtime_info="$("$CONTAINER_CMD" exec "$auth_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh runtime info "$runtime")" || die "Failed to inspect installed runtime auth contract: $runtime"
     else
       die "Runtime is not installed in auth container and cannot be installed automatically: $runtime"
@@ -1468,7 +1476,7 @@ run_auth_flow() {
   "$CONTAINER_CMD" stop "$auth_name" >/dev/null
   "$CONTAINER_CMD" rm "$auth_name" >/dev/null
   created=0
-  trap - EXIT
+  trap - EXIT INT TERM HUP
 }
 
 backup_codex_config() {
