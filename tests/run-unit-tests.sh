@@ -140,16 +140,40 @@ test_agent_sh_runtime_capabilities_reports_manifest_commands() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "codex" and (.commands | index("runtime install codex") != null) and (.commands | index("runtime capabilities codex") != null)' >/dev/null || fail "Expected runtime capabilities JSON for codex, got: $RUN_OUTPUT"
 }
 
-test_agent_sh_rejects_unsupported_runtime() {
-  begin_test "agent.sh rejects unsupported runtimes predictably"
+test_agent_sh_claude_runtime_info_reports_skeleton_metadata() {
+  begin_test "agent.sh runtime info reports claude skeleton metadata"
 
   local temp_home
   temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
   register_dir_cleanup "$temp_home"
 
   run_agent_sh_capture "$temp_home" runtime info claude
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "not-implemented" and (.commands | index("runtime install claude") != null)' >/dev/null || fail "Expected runtime info JSON for claude skeleton, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_claude_runtime_install_fails_predictably() {
+  begin_test "agent.sh claude runtime install fails predictably"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" runtime install claude
   assert_status 1
-  assert_contains "unsupported runtime: claude"
+  assert_contains "runtime install not implemented yet for claude"
+}
+
+test_agent_sh_rejects_unknown_runtime() {
+  begin_test "agent.sh rejects unknown runtimes predictably"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_agent_sh_capture "$temp_home" runtime info does-not-exist
+  assert_status 1
+  assert_contains "unsupported runtime: does-not-exist"
 }
 
 test_agent_sh_preferred_round_trip() {
@@ -779,7 +803,9 @@ main() {
   test_rm_help_reports_force_option
   test_agent_sh_runtime_info_reports_registry_metadata
   test_agent_sh_runtime_capabilities_reports_manifest_commands
-  test_agent_sh_rejects_unsupported_runtime
+  test_agent_sh_claude_runtime_info_reports_skeleton_metadata
+  test_agent_sh_claude_runtime_install_fails_predictably
+  test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write

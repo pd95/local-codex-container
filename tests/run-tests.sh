@@ -304,6 +304,8 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- bash -lc '
     bash /usr/local/bin/agent.sh runtime info codex \
       | jq -e '"'"'.runtime == "codex" and .install_method == "npm-global"'"'"' >/dev/null
+    bash /usr/local/bin/agent.sh runtime info claude \
+      | jq -e '"'"'.runtime == "claude" and .installed == false and .install_method == "not-implemented"'"'"' >/dev/null
     printf "%s\n" runtime-registry-ok > /workdir/runtime-registry.ok
   '
   assert_status 0

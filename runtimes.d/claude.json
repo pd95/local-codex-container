@@ -1,0 +1,22 @@
+{
+  "id": "claude",
+  "command": "claude",
+  "install_method": "not-implemented",
+  "default_config_dir": "/etc/claudectl",
+  "auth_formats": [],
+  "commands": [
+    "help",
+    "run",
+    "version",
+    "refresh",
+    "runtime list",
+    "preferred get",
+    "preferred set claude",
+    "runtime info claude",
+    "runtime capabilities claude",
+    "runtime install claude",
+    "runtime update claude",
+    "runtime reset-config claude",
+    "system manifest"
+  ]
+}
