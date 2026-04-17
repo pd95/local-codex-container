@@ -216,6 +216,38 @@ test_agent_sh_preferred_set_rejects_uninstalled_runtime() {
   assert_contains "runtime not installed: claude"
 }
 
+test_agent_sh_auth_read_rejects_invalid_codex_auth() {
+  begin_test "agent.sh auth read rejects invalid codex auth data"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  mkdir -p "$temp_home/home/.codex"
+  printf '%s' '{"tokens":{"refresh_token":""}}' >"$temp_home/home/.codex/auth.json"
+
+  run_agent_sh_capture "$temp_home" auth read codex json_refresh_token
+  assert_status 1
+  assert_contains "invalid auth state:"
+}
+
+test_agent_sh_auth_write_rejects_invalid_codex_auth() {
+  begin_test "agent.sh auth write rejects invalid codex auth data"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    "$TEST_ROOT/agent.sh" auth write codex json_refresh_token '{}'
+  assert_status 1
+  assert_contains "invalid auth payload for codex"
+}
+
 test_container_auth_info_uses_agent_sh_auth_read() {
   begin_test "container_auth_info reads auth via agent.sh auth read"
 
@@ -315,12 +347,15 @@ test_run_auth_flow_uses_agent_sh_auth_contract() {
   local fake_keychain
   local stored_blob_file
   local exec_log_file
+  local read_count_file
 
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth.XXXXXX")"
   register_dir_cleanup "$temp_dir"
   fake_keychain="$temp_dir/fake-keychain.sh"
   stored_blob_file="$temp_dir/stored-auth.json"
   exec_log_file="$temp_dir/exec.log"
+  read_count_file="$temp_dir/read-count"
+  printf '0' >"$read_count_file"
 
   cat >"$fake_keychain" <<EOF
 #!/usr/bin/env bash
@@ -364,6 +399,13 @@ EOF
           printf '{"runtime":"codex","installed":true,"auth_formats":["json_refresh_token"],"capabilities":{"auth_login":true,"auth_read":true,"auth_write":true}}'
         fi
         if [ "$*" = "bash /usr/local/bin/agent.sh auth read codex json_refresh_token" ]; then
+          local read_count
+          read_count="$(cat "$read_count_file")"
+          read_count=$((read_count + 1))
+          printf '%s' "$read_count" >"$read_count_file"
+          if [ "$read_count" -eq 1 ]; then
+            return 0
+          fi
           printf '{"refresh_token":"auth-flow-token","last_refresh":"2026-04-17T01:02:03Z"}'
         fi
         return 0
@@ -383,6 +425,86 @@ EOF
   grep -Fq 'bash /usr/local/bin/agent.sh auth read codex json_refresh_token' "$exec_log_file" || fail "Expected auth read via agent.sh"
   [ -f "$stored_blob_file" ] || fail "Expected auth blob to be written to fake keychain"
   grep -Fq '"refresh_token":"auth-flow-token"' "$stored_blob_file" || fail "Expected auth blob from agent.sh auth read"
+}
+
+test_run_auth_flow_skips_keychain_write_when_auth_unchanged() {
+  begin_test "run_auth_flow leaves Keychain untouched when auth state is unchanged"
+
+  local temp_dir
+  local unit_script
+  local fake_keychain
+  local stored_blob_file
+  local exec_log_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-unchanged.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  unit_script="$temp_dir/check.sh"
+  fake_keychain="$temp_dir/fake-keychain.sh"
+  stored_blob_file="$temp_dir/stored-auth.json"
+  exec_log_file="$temp_dir/exec.log"
+
+  cat >"$fake_keychain" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  write)
+    cat >"$stored_blob_file"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$fake_keychain"
+
+  cat >"$unit_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$CODEXCTL"
+KEYCHAIN_SCRIPT="$fake_keychain"
+refresh_container_file() { :; }
+refresh_container_tree() { :; }
+container_exists() { return 1; }
+CONTAINER_CMD=container
+container() {
+  case "\$1" in
+    create|start|stop|rm)
+      return 0
+      ;;
+    exec)
+      shift
+      if [ "\$1" = "-it" ]; then
+        shift
+      fi
+      if [ "\$1" = "unit-auth-container" ]; then
+        shift
+      fi
+      if [ "\${1:-}" = "setpriv" ]; then
+        shift 6
+      fi
+      printf '%s\n' "\$*" >>"$exec_log_file"
+      if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info codex" ]; then
+        printf '{"runtime":"codex","installed":true,"auth_formats":["json_refresh_token"],"capabilities":{"auth_login":true,"auth_read":true,"auth_write":true}}'
+      fi
+      if [ "\$*" = "bash /usr/local/bin/agent.sh auth read codex json_refresh_token" ]; then
+        printf '{"refresh_token":"same-token","last_refresh":"2026-04-17T01:02:03Z"}'
+      fi
+      return 0
+      ;;
+    *)
+      echo "Unexpected container invocation: \$*" >&2
+      exit 1
+      ;;
+  esac
+}
+run_auth_flow agent-plain unit-auth-container codex
+EOF
+  chmod +x "$unit_script"
+
+  run_capture bash "$unit_script"
+  assert_status 1
+  assert_contains "Runtime auth state did not change; leaving Keychain untouched: codex"
+  [ ! -f "$stored_blob_file" ] || fail "Did not expect Keychain write when auth is unchanged"
 }
 
 test_run_auth_flow_rejects_runtime_without_host_auth_support() {
@@ -945,9 +1067,12 @@ main() {
   test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
   test_agent_sh_preferred_set_rejects_uninstalled_runtime
+  test_agent_sh_auth_read_rejects_invalid_codex_auth
+  test_agent_sh_auth_write_rejects_invalid_codex_auth
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write
   test_run_auth_flow_uses_agent_sh_auth_contract
+  test_run_auth_flow_skips_keychain_write_when_auth_unchanged
   test_run_auth_flow_rejects_runtime_without_host_auth_support
   test_rm_force_stops_running_container_before_remove
   test_image_ref_for_runtime_falls_back_to_legacy_when_present

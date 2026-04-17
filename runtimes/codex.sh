@@ -46,6 +46,15 @@ agent_runtime_reset_config() {
   rm -f "$USER_RUNTIME_FILE"
 }
 
+codex_auth_payload_valid() {
+  jq -e '
+    type == "object" and (
+      ((.refresh_token? // "") | type == "string" and length > 0) or
+      ((.tokens.refresh_token? // "") | type == "string" and length > 0)
+    )
+  ' >/dev/null 2>&1
+}
+
 agent_runtime_auth_read() {
   local runtime="$1"
   local key="$2"
@@ -53,6 +62,7 @@ agent_runtime_auth_read() {
   [ "$runtime" = "codex" ] || die "unsupported runtime adapter: $runtime"
   [ "$key" = "json_refresh_token" ] || die "unsupported auth format: $key"
   [ -f "$CODEX_AUTH_FILE" ] || exit 1
+  codex_auth_payload_valid <"$CODEX_AUTH_FILE" || die "invalid auth state: $CODEX_AUTH_FILE"
   cat "$CODEX_AUTH_FILE"
 }
 
@@ -67,6 +77,8 @@ agent_runtime_auth_write() {
   if [ -z "$value" ] && [ ! -t 0 ]; then
     value="$(cat)"
   fi
+  [ -n "$value" ] || die "empty auth payload for codex"
+  printf '%s' "$value" | codex_auth_payload_valid || die "invalid auth payload for codex"
   printf '%s' "$value" >"$CODEX_AUTH_FILE"
 }
 
