@@ -7,12 +7,47 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 trap cleanup EXIT
 
-if [ $# -gt 1 ]; then
-  fail "Usage: $0 [TEST_FILTER]"
-fi
-if [ $# -eq 1 ]; then
-  TEST_FILTER="$1"
-fi
+usage() {
+  cat <<'EOF'
+Usage: ./tests/run-tests.sh [--filter TEXT] [--from TEXT]
+       ./tests/run-tests.sh [TEXT]
+
+Options:
+  --filter TEXT  Run only tests whose function name or description contains TEXT
+  --from TEXT    Run all tests starting at the first test whose function name or description contains TEXT
+
+If a single positional TEXT argument is provided, it is treated like --filter TEXT.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --filter)
+      TEST_FILTER="${2:-}"
+      [ -n "$TEST_FILTER" ] || fail "Missing value for --filter"
+      shift 2
+      ;;
+    --from)
+      TEST_START_FROM="${2:-}"
+      [ -n "$TEST_START_FROM" ] || fail "Missing value for --from"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      fail "Unknown option: $1"
+      ;;
+    *)
+      if [ -n "$TEST_FILTER" ]; then
+        fail "Unexpected positional argument: $1"
+      fi
+      TEST_FILTER="$1"
+      shift
+      ;;
+  esac
+done
 
 test_temp_run_removes_container() {
   begin_test "run --temp removes the named container"
@@ -244,6 +279,9 @@ main() {
   log "Using container runtime command $CONTAINER_CMD"
   if [ -n "$TEST_FILTER" ]; then
     log "Filtering host tests by: $TEST_FILTER"
+  fi
+  if [ -n "$TEST_START_FROM" ]; then
+    log "Running host tests from: $TEST_START_FROM"
   fi
 
   run_selected_test test_temp_run_removes_container "run --temp removes the named container"

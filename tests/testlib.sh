@@ -6,6 +6,8 @@ AGENTCTL="${AGENTCTL:-$TEST_ROOT/agentctl}"
 CODEXCTL="${CODEXCTL:-$TEST_ROOT/codexctl}"
 CONTAINER_CMD="${CONTAINER_CMD:-container}"
 TEST_FILTER="${TEST_FILTER:-}"
+TEST_START_FROM="${TEST_START_FROM:-}"
+TEST_START_ACTIVE=0
 
 TEST_STATUS=0
 RUN_STATUS=0
@@ -178,10 +180,33 @@ test_matches_filter() {
   esac
 }
 
+test_matches_start_from() {
+  local name="$1"
+  local description="$2"
+
+  if [ -z "$TEST_START_FROM" ]; then
+    return 0
+  fi
+  if [ "$TEST_START_ACTIVE" -eq 1 ]; then
+    return 0
+  fi
+
+  case "$name"$'\n'"$description" in
+    *"$TEST_START_FROM"*)
+      TEST_START_ACTIVE=1
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 run_selected_test() {
   local name="$1"
   local description="$2"
 
+  test_matches_start_from "$name" "$description" || return 0
   if test_matches_filter "$name" "$description"; then
     "$name"
   fi
