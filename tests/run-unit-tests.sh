@@ -162,19 +162,127 @@ test_agent_sh_claude_runtime_info_reports_skeleton_metadata() {
 
   run_agent_sh_capture "$temp_home" runtime info claude
   assert_status 0
-  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "not-implemented" and (.commands | index("runtime install claude") != null)' >/dev/null || fail "Expected runtime info JSON for claude skeleton, got: $RUN_OUTPUT"
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "native-installer" and .capabilities.install == true and .capabilities.update == true and .capabilities.reset_config == true and (.commands | index("runtime install claude") != null)' >/dev/null || fail "Expected runtime info JSON for claude runtime, got: $RUN_OUTPUT"
 }
 
-test_agent_sh_claude_runtime_install_fails_predictably() {
-  begin_test "agent.sh claude runtime install fails predictably"
+test_agent_sh_claude_runtime_install_runs_native_installer() {
+  begin_test "agent.sh claude runtime install runs the native installer"
+
+  local temp_home
+  local fake_bin
+  local install_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  install_log="$temp_home/install.log"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/apk" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$install_log"
+if [ "\$1" = "info" ] && [ "\$2" = "-e" ]; then
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$fake_bin/apk"
+
+  cat >"$fake_bin/curl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$install_log"
+cat <<'SCRIPT'
+#!/bin/sh
+echo installer-ran >/dev/null
+SCRIPT
+EOF
+  chmod +x "$fake_bin/curl"
+
+  cat >"$fake_bin/bash" <<EOF
+#!/bin/sh
+cat >/dev/null
+printf '%s\n' 'installer-bash' >>"$install_log"
+cat >"$fake_bin/claude" <<'SCRIPT'
+#!/bin/sh
+exit 0
+SCRIPT
+chmod +x "$fake_bin/claude"
+EOF
+  chmod +x "$fake_bin/bash"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" runtime install claude
+  assert_status 0
+  [ -x "$fake_bin/claude" ] || fail "Expected fake claude launcher to be created by installer"
+  grep -Fq 'info -e libgcc' "$install_log" || fail "Expected Alpine dependency verification for libgcc"
+  grep -Fq 'info -e libstdc++' "$install_log" || fail "Expected Alpine dependency verification for libstdc++"
+  grep -Fq 'info -e ripgrep' "$install_log" || fail "Expected Alpine dependency verification for ripgrep"
+  grep -Fq 'installer-bash' "$install_log" || fail "Expected native installer script to be piped into bash"
+  jq -er '.env.USE_BUILTIN_RIPGREP == "0"' "$temp_home/home/.claude/settings.json" >/dev/null || fail "Expected Claude settings.json to disable builtin ripgrep"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" preferred get
+  assert_status 0
+  assert_contains "claude"
+}
+
+test_agent_sh_claude_runtime_update_calls_claude_update() {
+  begin_test "agent.sh claude runtime update calls claude update"
+
+  local temp_home
+  local fake_bin
+  local update_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  update_log="$temp_home/update.log"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/claude" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$update_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/claude"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" runtime update claude
+  assert_status 0
+  grep -Fxq 'update' "$update_log" || fail "Expected claude update to be invoked"
+}
+
+test_agent_sh_claude_runtime_reset_config_restores_settings() {
+  begin_test "agent.sh claude runtime reset-config restores settings"
 
   local temp_home
   temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
   register_dir_cleanup "$temp_home"
+  mkdir -p "$temp_home/home/.claude"
+  printf '%s' '{"env":{"USE_BUILTIN_RIPGREP":"1"}}' >"$temp_home/home/.claude/settings.json"
 
-  run_agent_sh_capture "$temp_home" runtime install claude
-  assert_status 1
-  assert_contains "runtime install not implemented yet for claude"
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$PATH" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" runtime reset-config claude
+  assert_status 0
+  jq -er '.env.USE_BUILTIN_RIPGREP == "0"' "$temp_home/home/.claude/settings.json" >/dev/null || fail "Expected Claude settings reset to default ripgrep behavior"
 }
 
 test_agent_sh_rejects_unknown_runtime() {
@@ -1217,7 +1325,9 @@ main() {
   test_agent_sh_runtime_list_reports_installed_runtimes_only
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_claude_runtime_info_reports_skeleton_metadata
-  test_agent_sh_claude_runtime_install_fails_predictably
+  test_agent_sh_claude_runtime_install_runs_native_installer
+  test_agent_sh_claude_runtime_update_calls_claude_update
+  test_agent_sh_claude_runtime_reset_config_restores_settings
   test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
   test_agent_sh_preferred_set_rejects_uninstalled_runtime

@@ -114,6 +114,25 @@ runtime_command_name() {
   runtime_manifest_string "$1" '.command'
 }
 
+runtime_command_path() {
+  local runtime="$1"
+  local command_name=""
+  local candidate=""
+
+  command_name="$(runtime_command_name "$runtime")" || return 1
+  if command -v "$command_name" >/dev/null 2>&1; then
+    command -v "$command_name"
+    return 0
+  fi
+  for candidate in "$HOME/.local/bin/$command_name" "$HOME/bin/$command_name"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 runtime_install_method() {
   runtime_manifest_string "$1" '.install_method'
 }
@@ -135,11 +154,7 @@ runtime_commands_json() {
 }
 
 runtime_command_exists() {
-  local runtime="$1"
-  local command_name=""
-
-  command_name="$(runtime_command_name "$runtime")" || return 1
-  command -v "$command_name" >/dev/null 2>&1
+  runtime_command_path "$1" >/dev/null 2>&1
 }
 
 runtime_installed_json() {

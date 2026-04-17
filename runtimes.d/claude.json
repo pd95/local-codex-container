@@ -1,12 +1,12 @@
 {
   "id": "claude",
   "command": "claude",
-  "install_method": "not-implemented",
+  "install_method": "native-installer",
   "default_config_dir": "/etc/claudectl",
   "capabilities": {
-    "install": false,
-    "update": false,
-    "reset_config": false,
+    "install": true,
+    "update": true,
+    "reset_config": true,
     "auth_login": false,
     "auth_read": false,
     "auth_write": false,

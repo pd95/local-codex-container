@@ -306,7 +306,7 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
     bash /usr/local/bin/agent.sh runtime info codex \
       | jq -e '"'"'.runtime == "codex" and .install_method == "npm-global"'"'"' >/dev/null
     bash /usr/local/bin/agent.sh runtime info claude \
-      | jq -e '"'"'.runtime == "claude" and .installed == false and .install_method == "not-implemented"'"'"' >/dev/null
+      | jq -e '"'"'.runtime == "claude" and .installed == false and .install_method == "native-installer" and .capabilities.install == true and .capabilities.update == true'"'"' >/dev/null
     printf "%s\n" runtime-registry-ok > /workdir/runtime-registry.ok
   '
   assert_status 0
@@ -336,7 +336,7 @@ test_runtime_info_claude_works_after_refresh_on_stopped_container() {
 
   run_capture "$AGENTCTL" runtime --name "$name" info claude
   assert_status 0
-  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "not-implemented"' >/dev/null || fail "Expected runtime info JSON for claude on stopped container after refresh, got: $RUN_OUTPUT"
+  printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "native-installer" and .capabilities.install == true and .capabilities.update == true' >/dev/null || fail "Expected runtime info JSON for claude on stopped container after refresh, got: $RUN_OUTPUT"
 }
 
 main() {
