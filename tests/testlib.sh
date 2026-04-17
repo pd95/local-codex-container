@@ -17,6 +17,7 @@ RUN_OUTPUT=""
 RUN_LOG=""
 
 CLEANUP_CONTAINERS=""
+CLEANUP_RAW_CONTAINERS=""
 CLEANUP_BACKUP_IMAGES=""
 CLEANUP_DIRS=""
 
@@ -56,6 +57,14 @@ register_container_cleanup() {
     *" $name "*) return 0 ;;
   esac
   CLEANUP_CONTAINERS="$CLEANUP_CONTAINERS $name"
+}
+
+register_raw_container_cleanup() {
+  local name="$1"
+  case " $CLEANUP_RAW_CONTAINERS " in
+    *" $name "*) return 0 ;;
+  esac
+  CLEANUP_RAW_CONTAINERS="$CLEANUP_RAW_CONTAINERS $name"
 }
 
 register_backup_cleanup() {
@@ -150,6 +159,15 @@ cleanup() {
   for name in $CLEANUP_CONTAINERS; do
     if container_exists "$name"; then
       "$AGENTCTL" rm --name "$name" >/dev/null 2>&1 || true
+    fi
+  done
+
+  for name in $CLEANUP_RAW_CONTAINERS; do
+    if "$CONTAINER_CMD" ls 2>/dev/null | grep -q -E "(^|[[:space:]])$name([[:space:]]|$)"; then
+      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 || true
+    fi
+    if "$CONTAINER_CMD" ls -a 2>/dev/null | grep -q -E "(^|[[:space:]])$name([[:space:]]|$)"; then
+      "$CONTAINER_CMD" rm "$name" >/dev/null 2>&1 || true
     fi
   done
 
