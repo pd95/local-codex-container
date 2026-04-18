@@ -110,6 +110,9 @@ agent_runtime_run() {
 
   case "$RUN_MODE" in
     online)
+      if [ -n "$MODEL_OVERRIDE" ] && ! claude_has_explicit_model "$@"; then
+        exec "$(claude_command_path)" --model "$MODEL_OVERRIDE" "$@"
+      fi
       exec "$(claude_command_path)" "$@"
       ;;
   esac
@@ -123,7 +126,7 @@ agent_runtime_run() {
   if claude_has_explicit_model "$@"; then
     exec "$(claude_command_path)" "$@"
   fi
-  exec "$(claude_command_path)" --model "$CLAUDE_LOCAL_MODEL" "$@"
+  exec "$(claude_command_path)" --model "${MODEL_OVERRIDE:-$CLAUDE_LOCAL_MODEL}" "$@"
 }
 
 agent_runtime_install() {

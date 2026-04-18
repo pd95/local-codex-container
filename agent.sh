@@ -8,6 +8,7 @@ readonly USER_RUNTIME_FILE="${USER_CONFIG_DIR}/preferred-runtime"
 readonly CODEX_HOME_DIR="${HOME}/.codex"
 readonly CODEX_AUTH_FILE="${CODEX_HOME_DIR}/auth.json"
 readonly DEFAULT_PROFILE="${AGENTCTL_DEFAULT_PROFILE:-gpt-oss}"
+readonly MODEL_OVERRIDE="${AGENTCTL_MODEL_OVERRIDE:-}"
 readonly RUN_MODE="${AGENTCTL_RUN_MODE:-local}"
 readonly RUNTIME_REGISTRY_DIR="${AGENTCTL_RUNTIME_REGISTRY_DIR:-/etc/agentctl/runtimes.d}"
 readonly RUNTIME_ADAPTER_DIR="${AGENTCTL_RUNTIME_ADAPTER_DIR:-/usr/local/lib/agentctl/runtimes}"
@@ -56,6 +57,16 @@ has_explicit_codex_cd() {
   for arg in "$@"; do
     case "$arg" in
       --cd|--cd=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+has_explicit_runtime_model() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -m|--model|--model=*) return 0 ;;
     esac
   done
   return 1

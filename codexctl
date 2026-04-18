@@ -555,6 +555,7 @@ Options:
   --runtime NAME  Preferred runtime to launch in the container (e.g. codex, claude)
   --install-runtime  Install the selected runtime before launch
   --profile NAME  Codex profile to use (default: gpt-oss)
+  --model NAME    Override the launch model for the selected runtime
   --online        Use the runtime's online/provider-backed mode
   --auth          Force an online login flow before launch
   --reset-config  Replace ~/.codex/config.toml and local_models.json from the image and recreate ~/.codex/AGENTS.md as a symlink
@@ -2631,17 +2632,18 @@ run_mode() {
   local workdir="${11}"
   local reset_config="${12}"
   local profile="${13}"
-  shift 13
+  local model_override="${14}"
+  shift 14
   local -a cmd_override=("$@")
   local pre_exec=""
   local post_exec=""
   local runtime_mode="local"
-  local cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile")
+  local cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 AGENTCTL_MODEL_OVERRIDE=\$3 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile" "$model_override")
 
   if [ "$online" -eq 1 ]; then
     runtime_mode="online"
     post_exec="run_post_exec"
-    cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile")
+    cmd=("$DEFAULT_SHELL" "-lc" "AGENTCTL_RUN_MODE=\$1 AGENTCTL_DEFAULT_PROFILE=\$2 AGENTCTL_MODEL_OVERRIDE=\$3 exec bash /usr/local/bin/agent.sh run" sh "$runtime_mode" "$profile" "$model_override")
   fi
   if [ "$RUN_UPDATE_CODEX" -eq 1 ] || [ -n "$RUN_SELECTED_RUNTIME" ] || [ "$RUN_SYNC_RUNTIME_AUTH" -eq 1 ] || [ "$RUN_LOCAL_MODEL_PREFLIGHT" -eq 1 ]; then
     pre_exec="run_pre_exec"
@@ -3121,6 +3123,7 @@ run_cmd() {
   local shell=0
   local reset_config=0
   local profile="${DEFAULT_CODEX_PROFILE}"
+  local model_override=""
   local profile_set=0
   local read_only=0
   local cpu=""
@@ -3137,6 +3140,7 @@ run_cmd() {
       --workdir) workdir="$2"; shift 2 ;;
       --runtime) runtime="$2"; shift 2 ;;
       --install-runtime) install_runtime=1; shift ;;
+      --model) model_override="$2"; shift 2 ;;
       --online) online=1; shift ;;
       --auth) auth=1; shift ;;
       --reset-config) reset_config=1; shift ;;
@@ -3218,7 +3222,7 @@ run_cmd() {
     RUN_UPDATE_CODEX=1
   fi
 
-  run_mode "$name" "$image" "$temp" "$shell" "$online" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" "$profile" ${cmd_override[@]+"${cmd_override[@]}"}
+  run_mode "$name" "$image" "$temp" "$shell" "$online" "$auth" "$update" "$cpu" "$mem" "$read_only" "$workdir" "$reset_config" "$profile" "$model_override" ${cmd_override[@]+"${cmd_override[@]}"}
 }
 
 auth_cmd() {

@@ -129,6 +129,9 @@ agentctl run --read-only
 # Throwaway session (container is deleted when codex is quit)
 agentctl run --temp
 
+# Override the launch model for the selected runtime
+agentctl run --runtime claude --model qwen3:14b
+
 # Online mode (auto-auth if needed)
 agentctl run --online
 
@@ -181,6 +184,7 @@ agentctl run --cmd bash
 - Builds create stable local image tags and also add immutable UTC snapshot tags such as `agent-plain:20260313-154500`. By default `agentctl build` discovers local `DockerFile*` definitions in the repo, resolves local `FROM agent...` dependencies, and builds them in dependency order. Use `agentctl build --snapshot` to add fresh timestamp tags to the current images without rebuilding them.
 - `agentctl build --runtimes <runtime[,runtime...]>` changes which runtimes are preinstalled in newly built images, and `--default-runtime <runtime>` chooses which one becomes preferred at startup. If you omit `--default-runtime`, the first runtime in the list becomes the default. For the single-runtime case, `agentctl build --default-runtime claude` still works and installs only Claude. Image builds now invoke the copied in-image `agent.sh runtime install ...` path, so the same runtime adapter logic is used during builds and later in-container installs.
 - Local mode is now runtime-specific. Codex local runs use a profile from `config.toml`; the default profile is `gpt-oss`, and `agentctl run --profile gemma` launches the bundled Gemma profile after pulling `gemma4:26b-a4b-it-q4_K_M` into Ollama. Claude local runs now default to Ollama-backed `gpt-oss:20b` using the Anthropic-compatible endpoint exported by the runtime adapter.
+- `agentctl run --model <name>` passes a runtime-neutral model override into the launch path. Codex maps it to `-m <name>` and Claude maps it to `--model <name>`. In Claude local mode, that override replaces the default `gpt-oss:20b` model.
 - `--cmd` consumes the remaining arguments, cannot be combined with `--shell`, and should be placed last. If you pass one quoted string with spaces, it runs via `$CODEX_SHELL -lc`. The same behavior applies to `agentctl exec`.
 - `agentctl run --runtime <runtime>` selects the preferred runtime to launch in the target container before executing the default entrypoint. Add `--install-runtime` to install that runtime first when needed. A practical Claude bootstrap path is now just `agentctl run --runtime claude --install-runtime`.
 - For most new setups, prefer runtime-first flows such as `agentctl run --runtime codex --install-runtime` or `agentctl run --runtime claude --install-runtime` over choosing an image because it happens to bundle a specific agent/runtime.

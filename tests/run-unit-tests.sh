@@ -73,6 +73,7 @@ test_run_profile_wires_selected_profile() {
   [ "$captured_pre_exec" = "run_pre_exec" ] || fail "Expected run_pre_exec, got: $captured_pre_exec"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_RUN_MODE=' || fail "Expected agent.sh launch wrapper, got: $captured_cmd"
   printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_DEFAULT_PROFILE=' || fail "Expected profile to be passed to agent.sh, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_MODEL_OVERRIDE=' || fail "Expected model override env slot to be present, got: $captured_cmd"
   printf '%s\n' "$captured_cmd" | grep -Fq '/usr/local/bin/agent.sh run' || fail "Expected agent.sh run launch path, got: $captured_cmd"
   if printf '%s\n' "$captured_cmd" | grep -Fq -- '--cd /workdir'; then
     fail "Did not expect codex-specific --cd flag in generic host launch path: $captured_cmd"
@@ -86,7 +87,31 @@ test_run_help_reports_runtime_options() {
   assert_status 0
   assert_contains "--runtime NAME  Preferred runtime to launch"
   assert_contains "--install-runtime  Install the selected runtime before launch"
+  assert_contains "--model NAME    Override the launch model for the selected runtime"
   assert_contains "--online        Use the runtime's online/provider-backed mode"
+}
+
+test_run_model_wires_selected_model() {
+  begin_test "run_cmd wires --model into the launched agent.sh command"
+
+  load_codexctl_functions
+
+  local captured_cmd=""
+  local workdir
+
+  workdir="$(new_workdir)"
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  run_container() {
+    shift 11
+    captured_cmd="$(printf '%s\n' "$*")"
+  }
+
+  run_cmd --name unit-test-container --workdir "$workdir" --model qwen3:14b
+
+  printf '%s\n' "$captured_cmd" | grep -Fq 'AGENTCTL_MODEL_OVERRIDE=' || fail "Expected model override to be passed to agent.sh, got: $captured_cmd"
+  printf '%s\n' "$captured_cmd" | grep -Fq 'qwen3:14b' || fail "Expected selected model in launch wrapper, got: $captured_cmd"
 }
 
 test_build_help_reports_primary_base_images() {
@@ -1188,6 +1213,38 @@ EOF
   grep -Fq -- '--cd /workdir' "$run_log" || fail "Expected codex run to include --cd /workdir"
 }
 
+test_agent_sh_codex_run_uses_model_override() {
+  begin_test "agent.sh codex run maps the model override to -m"
+
+  local temp_home
+  local fake_bin
+  local run_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  run_log="$temp_home/codex-run.log"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/codex" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$run_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/codex"
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_MODEL_OVERRIDE="qwen3:14b" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    /bin/bash "$TEST_ROOT/agent.sh" run
+  assert_status 0
+  grep -Fq -- '-m qwen3:14b' "$run_log" || fail "Expected codex run to include -m qwen3:14b"
+  grep -Fq -- '--cd /workdir' "$run_log" || fail "Expected codex run to keep --cd /workdir"
+}
+
 test_agent_sh_claude_run_uses_local_ollama_defaults() {
   begin_test "agent.sh claude run uses Anthropic-compatible Ollama defaults"
 
@@ -1266,6 +1323,44 @@ EOF
     /bin/bash "$TEST_ROOT/agent.sh" run --model llama3
   assert_status 0
   grep -Fq 'ARGS=--model llama3' "$run_log" || fail "Expected explicit Claude model to be preserved"
+}
+
+test_agent_sh_claude_run_uses_model_override() {
+  begin_test "agent.sh claude run uses the generic model override"
+
+  local temp_home
+  local fake_bin
+  local run_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  run_log="$temp_home/claude-run.log"
+  mkdir -p "$fake_bin" "$temp_home/config/agentctl"
+  printf '%s\n' claude >"$temp_home/config/agentctl/preferred-runtime"
+
+  cat >"$fake_bin/claude" <<EOF
+#!/bin/sh
+printf 'ARGS=%s\n' "\$*" >"$run_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/claude"
+
+  cat >"$temp_home/proc-net-route" <<'EOF'
+Iface   Destination Gateway     Flags RefCnt Use Metric Mask        MTU Window IRTT
+eth0    00000000    0100A8C0    0003  0      0   0      00000000    0   0      0
+EOF
+
+  run_capture env \
+    HOME="$temp_home/home" \
+    XDG_CONFIG_HOME="$temp_home/config" \
+    PATH="$fake_bin:$PATH" \
+    AGENTCTL_MODEL_OVERRIDE="qwen3:14b" \
+    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
+    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
+    AGENTCTL_CLAUDE_ROUTE_FILE="$temp_home/proc-net-route" \
+    /bin/bash "$TEST_ROOT/agent.sh" run
+  assert_status 0
+  grep -Fq 'ARGS=--model qwen3:14b' "$run_log" || fail "Expected Claude model override to replace the default local model"
 }
 
 test_agent_sh_rejects_unknown_runtime() {
@@ -2556,6 +2651,7 @@ main() {
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
   test_run_help_reports_runtime_options
+  test_run_model_wires_selected_model
   test_build_help_reports_primary_base_images
   test_build_cmd_passes_runtime_list_build_args
   test_build_cmd_uses_first_runtime_as_default_when_unspecified
@@ -2600,8 +2696,10 @@ main() {
   test_agent_sh_claude_runtime_update_calls_claude_update
   test_agent_sh_claude_runtime_reset_config_restores_settings
   test_agent_sh_codex_run_defaults_to_workdir_cd
+  test_agent_sh_codex_run_uses_model_override
   test_agent_sh_claude_run_uses_local_ollama_defaults
   test_agent_sh_claude_run_respects_explicit_model
+  test_agent_sh_claude_run_uses_model_override
   test_agent_sh_rejects_unknown_runtime
   test_agent_sh_preferred_round_trip
   test_agent_sh_preferred_set_rejects_uninstalled_runtime
