@@ -16,7 +16,7 @@ agent_runtime_run() {
   fi
 
   case "$RUN_MODE" in
-    openai)
+    online)
       if [ "${#codex_args[@]}" -eq 0 ]; then
         exec codex
       fi
