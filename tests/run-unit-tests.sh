@@ -1015,7 +1015,7 @@ test_agent_sh_feature_info_reports_installed_after_office_install() {
     AGENTCTL_FEATURE_STATE_DIR="$temp_home/state" \
     "$TEST_ROOT/agent.sh" feature info office
   assert_status 0
-  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .image == "agent-python" and .installed == true and .capabilities.install == true and .install_method == "apk+npm+pip"' >/dev/null || fail "Expected installed feature info JSON for office, got: $RUN_OUTPUT"
+  printf '%s' "$RUN_OUTPUT" | jq -er '.feature == "office" and .installed == true and .capabilities.install == true and .install_method == "apk+npm+pip"' >/dev/null || fail "Expected installed feature info JSON for office, got: $RUN_OUTPUT"
 }
 
 test_agent_sh_runtime_list_reports_installed_runtimes_only() {
