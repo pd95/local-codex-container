@@ -2783,7 +2783,7 @@ test_cleanup_temp_dir_handles_read_only_trees() {
 
 main() {
   log "Using agentctl at $AGENTCTL"
-  log "Using codexctl implementation at $CODEXCTL"
+  log "Using agentctl implementation at $AGENTCTL_IMPL"
 
   test_run_profile_wires_selected_profile
   test_run_help_reports_profile_default
