@@ -197,9 +197,9 @@ bash tests/run-tests.sh
 Deeper documentation now lives under `docs/`:
 
 - [docs/getting-started.md](docs/getting-started.md)
+- [docs/networking.md](docs/networking.md)
 - [docs/runtimes.md](docs/runtimes.md)
 - [docs/local-vs-online.md](docs/local-vs-online.md)
-- [docs/networking.md](docs/networking.md)
 - [docs/images.md](docs/images.md)
 - [docs/bootstrap.md](docs/bootstrap.md)
 - [docs/auth.md](docs/auth.md)

@@ -153,6 +153,7 @@ agentctl runtime reset-config codex
 
 ## Next guides
 
+- [networking.md](networking.md)
 - [runtimes.md](runtimes.md)
 - [local-vs-online.md](local-vs-online.md)
 - [images.md](images.md)
