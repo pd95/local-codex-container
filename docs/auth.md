@@ -16,7 +16,7 @@ for online runs such as:
 
 ```bash
 agentctl auth --runtime codex
-agentctl run --online
+agentctl run --runtime codex --online
 
 agentctl auth --runtime claude
 agentctl run --runtime claude --online
@@ -40,7 +40,7 @@ In `--online` mode:
 Examples:
 
 ```bash
-agentctl run --online
+agentctl run --runtime codex --online
 agentctl run --runtime claude --online
 ```
 

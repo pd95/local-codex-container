@@ -19,7 +19,7 @@ Examples:
 agentctl run
 agentctl run --profile gemma
 agentctl run --profile qwen
-agentctl run --model qwen3:14b
+agentctl run --model qwen3.5:9b-nvfp4
 ```
 
 Notes:
@@ -66,9 +66,8 @@ enough if that runtime's online service is not available to your account.
 After that, use:
 
 ```bash
-agentctl run --online
-agentctl run --runtime claude --online
 agentctl run --runtime codex --online
+agentctl run --runtime claude --online
 ```
 
 In online mode:

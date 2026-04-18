@@ -56,7 +56,7 @@ ollama pull gpt-oss:20b
 
 # Optional Codex profile models
 ollama pull gemma4:26b-a4b-it-q4_K_M
-ollama pull qwen3.5:35b-a3b-coding-nvfp4
+ollama pull qwen3.5:9b-nvfp4
 
 # Start the Apple container API service
 container system start
@@ -115,10 +115,11 @@ Common first-run workflows:
 agentctl run --profile gemma
 
 # Test a specific model directly
-agentctl run --model qwen3.5
+agentctl run --model qwen3.5:9b-nvfp4
 
-# Use the runtime's online/provider-backed mode
-agentctl run --online
+# Use the runtime's online/provider-backed mode after logging in once
+agentctl auth --runtime codex
+agentctl run --runtime codex --online
 
 # Start a shell instead of the runtime
 agentctl run --shell
