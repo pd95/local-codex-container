@@ -79,8 +79,8 @@ In the normal case:
 - the directory you run `agentctl run` from becomes the mounted work directory
 - everything under that directory is visible to the agent
 - the agent can read and write files in that mounted directory tree
-- the agent does **not** automatically get unrestricted access to the rest of
-  your host filesystem through `agentctl`
+- the agent does **not** get unrestricted access to the rest of your host
+  filesystem through `agentctl`
 
 So the normal workflow is:
 1. `cd` into the project or document folder you want the agent to work on

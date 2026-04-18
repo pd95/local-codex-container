@@ -59,6 +59,8 @@ default. Instead, it mounts a chosen host directory into the container at
 In the default case:
 - the current directory becomes `/workdir`
 - the agent can read and write within that mounted directory tree
+- the agent does **not** get unrestricted access to the rest of your host
+  filesystem through `agentctl`
 - this is why you normally start `agentctl` from the project or document folder
   you want the agent to work on
 
