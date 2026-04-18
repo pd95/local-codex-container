@@ -1649,15 +1649,10 @@ codex_agents_state() {
   echo "missing"
 }
 
-overwrite_codex_config() {
+reset_runtime_config_in_container() {
   local name="$1"
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'mkdir -p /home/coder/.codex'
-  if ! "$CONTAINER_CMD" exec "$name" sh -lc 'test -f /etc/codexctl/config.toml'; then
-    die "Image does not include /etc/codexctl/config.toml for overwrite in $name"
-  fi
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'cp /etc/codexctl/config.toml /home/coder/.codex/config.toml'
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'if test -f /etc/codexctl/local_models.json; then cp /etc/codexctl/local_models.json /home/coder/.codex/local_models.json; else rm -f /home/coder/.codex/local_models.json; fi'
-  "$CONTAINER_CMD" exec -u 0 "$name" sh -lc 'ln -sf /etc/codexctl/image.md /home/coder/.codex/AGENTS.md && chown -h coder:coder /home/coder/.codex/AGENTS.md && chown coder:coder /home/coder/.codex/config.toml && if test -f /home/coder/.codex/local_models.json; then chown coder:coder /home/coder/.codex/local_models.json; fi'
+  local runtime="${2:-codex}"
+  run_agent_sh_in_container "$name" runtime reset-config "$runtime"
 }
 
 ensure_keychain() {
@@ -1676,46 +1671,78 @@ runtime_keychain_service() {
   local runtime="${1:-$OPENAI_RUNTIME_ID}"
   local auth_format="${2:-$OPENAI_AUTH_FORMAT}"
 
-  case "$runtime:$auth_format" in
-    "$OPENAI_RUNTIME_ID:$OPENAI_AUTH_FORMAT")
-      printf '%s\n' 'codex-OpenAI-auth'
-      ;;
-    *)
-      if [ -n "$auth_format" ]; then
-        printf 'agentctl-%s-%s-auth\n' "$(sanitize_keychain_segment "$runtime")" "$(sanitize_keychain_segment "$auth_format")"
-      else
-        printf 'agentctl-%s-auth\n' "$(sanitize_keychain_segment "$runtime")"
-      fi
-      ;;
-  esac
+  if [ -n "$auth_format" ]; then
+    printf 'agentctl-%s-%s-auth\n' "$(sanitize_keychain_segment "$runtime")" "$(sanitize_keychain_segment "$auth_format")"
+  else
+    printf 'agentctl-%s-auth\n' "$(sanitize_keychain_segment "$runtime")"
+  fi
 }
 
 runtime_keychain_account() {
   local runtime="${1:-$OPENAI_RUNTIME_ID}"
   local auth_format="${2:-$OPENAI_AUTH_FORMAT}"
 
+  if [ -n "$auth_format" ]; then
+    printf 'runtime-%s-%s-auth\n' "$(sanitize_keychain_segment "$runtime")" "$(sanitize_keychain_segment "$auth_format")"
+  else
+    printf 'runtime-%s-auth\n' "$(sanitize_keychain_segment "$runtime")"
+  fi
+}
+
+legacy_runtime_keychain_slots() {
+  local runtime="${1:-$OPENAI_RUNTIME_ID}"
+  local auth_format="${2:-$OPENAI_AUTH_FORMAT}"
+
   case "$runtime:$auth_format" in
     "$OPENAI_RUNTIME_ID:$OPENAI_AUTH_FORMAT")
-      printf '%s\n' 'device-auth-openAI'
-      ;;
-    *)
-      if [ -n "$auth_format" ]; then
-        printf 'runtime-%s-%s-auth\n' "$(sanitize_keychain_segment "$runtime")" "$(sanitize_keychain_segment "$auth_format")"
-      else
-        printf 'runtime-%s-auth\n' "$(sanitize_keychain_segment "$runtime")"
-      fi
+      printf '%s\t%s\n' 'codex-OpenAI-auth' 'device-auth-openAI'
+      printf '%s\t%s\n' 'agent-openai-auth' 'device-auth-openAI'
       ;;
   esac
+}
+
+run_keychain_with_slot() {
+  local service="$1"
+  local account="$2"
+  shift 2
+
+  KEYCHAIN_SERVICE_NAME="$service" \
+  KEYCHAIN_ACCOUNT_NAME="$account" \
+  "$KEYCHAIN_SCRIPT" "$@"
 }
 
 run_keychain_for_runtime() {
   local runtime="${1:-$OPENAI_RUNTIME_ID}"
   local auth_format="${2:-$OPENAI_AUTH_FORMAT}"
+  local primary_service=""
+  local primary_account=""
+  local legacy_service=""
+  local legacy_account=""
+  local output=""
   shift 2
 
-  KEYCHAIN_SERVICE_NAME="$(runtime_keychain_service "$runtime" "$auth_format")" \
-  KEYCHAIN_ACCOUNT_NAME="$(runtime_keychain_account "$runtime" "$auth_format")" \
-  "$KEYCHAIN_SCRIPT" "$@"
+  primary_service="$(runtime_keychain_service "$runtime" "$auth_format")"
+  primary_account="$(runtime_keychain_account "$runtime" "$auth_format")"
+
+  case "${1:-}" in
+    read|verify)
+      if output="$(run_keychain_with_slot "$primary_service" "$primary_account" "$@" 2>/dev/null)"; then
+        [ -n "$output" ] && printf '%s' "$output"
+        return 0
+      fi
+      while IFS=$'\t' read -r legacy_service legacy_account; do
+        [ -n "$legacy_service" ] || continue
+        if output="$(run_keychain_with_slot "$legacy_service" "$legacy_account" "$@" 2>/dev/null)"; then
+          [ -n "$output" ] && printf '%s' "$output"
+          return 0
+        fi
+      done < <(legacy_runtime_keychain_slots "$runtime" "$auth_format")
+      run_keychain_with_slot "$primary_service" "$primary_account" "$@"
+      ;;
+    *)
+      run_keychain_with_slot "$primary_service" "$primary_account" "$@"
+      ;;
+  esac
 }
 
 auth_info_from_json() {
@@ -2377,9 +2404,13 @@ runtime_cmd() {
     list)
       run_agent_sh_in_container "$name" runtime list
       ;;
-    info|capabilities|install|update|reset-config)
+    info|capabilities|reset-config)
       [ -n "$runtime" ] || die "Missing runtime for $subcommand"
       run_agent_sh_in_container "$name" runtime "$subcommand" "$runtime"
+      ;;
+    install|update)
+      [ -n "$runtime" ] || die "Missing runtime for $subcommand"
+      run_agent_sh_in_container_root "$name" runtime "$subcommand" "$runtime"
       ;;
     use)
       [ -n "$runtime" ] || die "Missing runtime for $subcommand"
@@ -2593,7 +2624,7 @@ run_container() {
   fi
 
   if [ "$reset_config" -eq 1 ]; then
-    overwrite_codex_config "$actual_name"
+    reset_runtime_config_in_container "$actual_name" codex
   fi
   if [ -n "$pre_exec" ]; then
     "$pre_exec" "$actual_name"
@@ -2700,7 +2731,7 @@ run_pre_exec() {
 
   if [ -n "$RUN_SELECTED_RUNTIME" ]; then
     if [ "$RUN_INSTALL_RUNTIME" -eq 1 ]; then
-      run_agent_sh_in_container "$name" runtime install "$RUN_SELECTED_RUNTIME"
+      run_agent_sh_in_container_root "$name" runtime install "$RUN_SELECTED_RUNTIME"
     fi
     run_agent_sh_in_container "$name" preferred set "$RUN_SELECTED_RUNTIME"
   fi
@@ -3102,13 +3133,7 @@ local_runtime_preflight() {
 
 update_codex_pre_exec() {
   local name="$1"
-  local cmd='npm install -g @openai/codex --omit=dev --no-fund --no-audit'
-  echo "Updating @openai/codex in container: $name" >&2
-  if "$CONTAINER_CMD" exec -it -u 0 "$name" sh -lc "$cmd"; then
-    return 0
-  fi
-  warn "Root-level update failed for $name; retrying as container user"
-  "$CONTAINER_CMD" exec -it "$name" sh -lc "$cmd"
+  run_agent_sh_in_container_root "$name" runtime update codex
 }
 
 run_cmd() {
@@ -3417,7 +3442,7 @@ upgrade_cmd() {
   restore_codex_config "$name" "$config_backup_file"
   if [ "$overwrite_config" -eq 1 ]; then
     echo "Overwriting config.toml, local_models.json in ~/.codex/ and recreating ~/.codex/AGENTS.md in $name" >&2
-    overwrite_codex_config "$name"
+    reset_runtime_config_in_container "$name" codex
   fi
 
   if [ "$was_running" -eq 0 ]; then

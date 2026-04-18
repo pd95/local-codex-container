@@ -58,8 +58,8 @@ runtime before relying on the new credentials.
 Host-side Keychain storage is keyed per runtime and auth format.
 
 Notes:
-- Codex keeps the legacy `codex-OpenAI-auth` slot
-- Claude uses a runtime-specific Keychain slot
+- Runtimes use runtime-specific Keychain slots
+- Codex still reads the legacy `codex-OpenAI-auth` and older `agent-openai-auth` slots as fallbacks
 - Keychain auth is the host-side source of truth for online launches when a
   runtime supports host-managed auth
 
