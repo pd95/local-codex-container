@@ -70,6 +70,29 @@ version is:
 
 Details and options are in [docs/networking.md](docs/networking.md).
 
+## Workspace model
+
+`agentctl run` starts an agent inside a container, but it mounts a host
+directory into that container at `/workdir`.
+
+In the normal case:
+- the directory you run `agentctl run` from becomes the mounted work directory
+- everything under that directory is visible to the agent
+- the agent can read and write files in that mounted directory tree
+- the agent does **not** automatically get unrestricted access to the rest of
+  your host filesystem through `agentctl`
+
+So the normal workflow is:
+1. `cd` into the project or document folder you want the agent to work on
+2. run `agentctl run`
+3. let the agent work inside that mounted directory tree
+
+If you want a different directory than the current one, use:
+
+```bash
+agentctl run --workdir /path/to/project
+```
+
 ## Quick start
 
 Build the curated images once:
@@ -78,7 +101,8 @@ Build the curated images once:
 agentctl build
 ```
 
-Start working in the current directory:
+Then start the agent against the current directory, which will be mounted into
+the container as `/workdir`:
 
 ```bash
 agentctl run

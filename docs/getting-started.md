@@ -50,6 +50,24 @@ container system start
 If local runtime launches cannot reach Ollama, follow
 [networking.md](networking.md).
 
+## Workspace model
+
+`agentctl run` does not make the agent operate on the whole host machine by
+default. Instead, it mounts a chosen host directory into the container at
+`/workdir`.
+
+In the default case:
+- the current directory becomes `/workdir`
+- the agent can read and write within that mounted directory tree
+- this is why you normally start `agentctl` from the project or document folder
+  you want the agent to work on
+
+If you want to target a different directory, use:
+
+```bash
+agentctl run --workdir /path/to/project
+```
+
 ## First build
 
 Build the curated images:
@@ -66,7 +84,8 @@ agentctl build --runtimes codex,claude --default-runtime claude
 
 ## First run
 
-Start the default container for the current directory:
+Start the default container for the current directory. That directory is mounted
+into the container as `/workdir`:
 
 ```bash
 agentctl run
