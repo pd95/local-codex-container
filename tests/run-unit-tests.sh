@@ -31,6 +31,7 @@ run_agent_sh_capture_env() {
   local temp_home="$1"
   shift
   local env_args=()
+  local run_cmd_args=()
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,16 +49,22 @@ run_agent_sh_capture_env() {
     esac
   done
 
-  run_capture env -i \
-    HOME="$temp_home/home" \
-    XDG_CONFIG_HOME="$temp_home/config" \
-    PATH="/usr/bin:/bin" \
-    AGENTCTL_RUNTIME_REGISTRY_DIR="$TEST_ROOT/runtimes.d" \
-    AGENTCTL_RUNTIME_ADAPTER_DIR="$TEST_ROOT/runtimes" \
-    AGENTCTL_FEATURE_REGISTRY_DIR="$TEST_ROOT/features.d" \
-    AGENTCTL_FEATURE_ADAPTER_DIR="$TEST_ROOT/features" \
-    "${env_args[@]}" \
-    /bin/bash "$TEST_ROOT/agent.sh" "$@"
+  run_cmd_args=(
+    env -i
+    "HOME=$temp_home/home"
+    "XDG_CONFIG_HOME=$temp_home/config"
+    "PATH=/usr/bin:/bin"
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d"
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes"
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d"
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features"
+  )
+  if [ "${#env_args[@]}" -gt 0 ]; then
+    run_cmd_args+=("${env_args[@]}")
+  fi
+  run_cmd_args+=(/bin/bash "$TEST_ROOT/agent.sh" "$@")
+
+  run_capture "${run_cmd_args[@]}"
 }
 
 make_fake_runtime_bin() {
