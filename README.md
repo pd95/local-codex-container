@@ -155,10 +155,10 @@ agentctl runtime install claude
 agentctl runtime use claude
 ```
 
-Use a feature pack:
+Use the `office` feature on an `agent-python` container:
 
 ```bash
-agentctl feature list
+agentctl run --image agent-python --cmd true
 agentctl feature info office
 agentctl feature install office
 ```
