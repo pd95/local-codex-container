@@ -56,6 +56,9 @@ ollama pull gpt-oss:20b
 
 # Optional Codex profile models
 ollama pull gemma4:26b-a4b-it-q4_K_M
+ollama pull qwen3.5:35b-a3b-coding-nvfp4
+
+# Optional smaller model for direct `--model` testing
 ollama pull qwen3.5:9b-nvfp4
 
 # Start the Apple container API service

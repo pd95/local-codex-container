@@ -43,6 +43,9 @@ Then run:
 ```bash
 ollama pull gpt-oss:20b
 ollama pull gemma4:26b-a4b-it-q4_K_M
+# Matches the built-in Codex `qwen` profile
+ollama pull qwen3.5:35b-a3b-coding-nvfp4
+# Smaller model for direct `agentctl run --model ...` testing
 ollama pull qwen3.5:9b-nvfp4
 container system start
 ```
