@@ -833,6 +833,7 @@ test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
   default_name() { printf 'unit-bootstrap-container\n'; }
   container_exists() { [ "$1" = "unit-bootstrap-container" ]; }
   container_running() { return 1; }
+  persist_container_system_manifest_baseline_from_live_state() { :; }
   refresh_container_file() { exec_log="${exec_log}file:$3"$'\n'; }
   refresh_container_tree() { exec_log="${exec_log}tree:$3"$'\n'; }
   CONTAINER_CMD=container
@@ -893,6 +894,7 @@ test_bootstrap_cmd_creates_and_bootstraps_new_alpine_container() {
   require_container() { return 0; }
   container_exists() { return 1; }
   container_running() { return 1; }
+  persist_container_system_manifest_baseline_from_live_state() { :; }
   refresh_container_file() { exec_log="${exec_log}file:$3"$'\n'; }
   refresh_container_tree() { exec_log="${exec_log}tree:$3"$'\n'; }
   CONTAINER_CMD=container
@@ -955,6 +957,7 @@ test_bootstrap_cmd_bootstraps_apt_container() {
   default_name() { printf 'unit-bootstrap-container\n'; }
   container_exists() { [ "$1" = "unit-bootstrap-container" ]; }
   container_running() { return 1; }
+  persist_container_system_manifest_baseline_from_live_state() { :; }
   refresh_container_file() { exec_log="${exec_log}file:$3"$'\n'; }
   refresh_container_tree() { exec_log="${exec_log}tree:$3"$'\n'; }
   CONTAINER_CMD=container
@@ -1263,6 +1266,29 @@ test_agent_sh_claude_runtime_info_reports_skeleton_metadata() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.runtime == "claude" and .installed == false and .install_method == "native-installer" and .capabilities.install == true and .capabilities.update == true and .capabilities.reset_config == true and .capabilities.auth_login == true and .capabilities.auth_read == true and .capabilities.auth_write == true and .capabilities.local_mode == true and .capabilities.online_mode == true and (.auth_formats | index("claude_ai_oauth_json") != null) and (.commands | index("runtime install claude") != null) and (.commands | index("auth login claude") != null)' >/dev/null || fail "Expected runtime info JSON for claude runtime, got: $RUN_OUTPUT"
 }
 
+test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state() {
+  begin_test "agent.sh system manifest includes installed runtimes, features, and preferred runtime state"
+
+  local temp_home
+  local fake_bin
+  local state_dir
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$(make_fake_runtime_bin "$temp_home" codex)"
+  make_fake_runtime_bin "$temp_home" claude >/dev/null
+  state_dir="$temp_home/state"
+  mkdir -p "$state_dir/office" "$temp_home/config/agentctl"
+  printf '%s\n' installed >"$state_dir/office/install-complete"
+  printf '%s\n' claude >"$temp_home/config/agentctl/preferred-runtime"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_FEATURE_STATE_DIR="$state_dir" \
+    -- system manifest
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.installed_runtimes == ["claude","codex"] and .installed_features == ["office"] and .default_runtime == "codex" and .preferred_runtime == "claude"' >/dev/null || fail "Expected richer system manifest JSON, got: $RUN_OUTPUT"
+}
+
 test_agent_sh_claude_runtime_install_runs_native_installer() {
   begin_test "agent.sh claude runtime install runs the native installer"
 
@@ -1465,6 +1491,33 @@ EOF
     -- run
   assert_status 0
   grep -Fq -- '--profile gemma' "$run_log" || fail "Expected codex run to include --profile gemma"
+  grep -Fq -- '--cd /workdir' "$run_log" || fail "Expected codex run to include --cd /workdir"
+}
+
+test_agent_sh_accepts_explicit_empty_runtime_config_json() {
+  begin_test "agent.sh accepts explicit empty runtime config JSON"
+
+  local temp_home
+  local fake_bin
+  local run_log
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  run_log="$temp_home/codex-run.log"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/codex" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >"$run_log"
+exit 0
+EOF
+  chmod +x "$fake_bin/codex"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_RUNTIME_CONFIG_JSON='{}' \
+    -- run
+  assert_status 0
   grep -Fq -- '--cd /workdir' "$run_log" || fail "Expected codex run to include --cd /workdir"
 }
 
@@ -1709,6 +1762,22 @@ test_agent_sh_auth_write_rejects_invalid_codex_auth() {
   assert_contains "invalid auth payload for codex"
 }
 
+test_agent_sh_auth_write_codex_does_not_require_user_config_dir() {
+  begin_test "agent.sh auth write for codex does not require ~/.config/agentctl"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  mkdir -p "$temp_home/home/.config"
+  chmod 500 "$temp_home/home/.config"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="/usr/bin:/bin" \
+    -- auth write codex json_refresh_token '{"refresh_token":"token"}'
+  assert_status 0
+  jq -er '.refresh_token == "token"' "$temp_home/home/.codex/auth.json" >/dev/null || fail "Expected Codex auth to be written without ~/.config/agentctl"
+}
+
 test_agent_sh_claude_auth_read_includes_optional_home_state() {
   begin_test "agent.sh auth read returns claude credentials and minimal home state"
 
@@ -1793,6 +1862,198 @@ test_agent_sh_claude_auth_write_rejects_invalid_payload() {
     -- auth write claude claude_ai_oauth_json '{}'
   assert_status 1
   assert_contains "invalid auth payload for claude"
+}
+
+test_agent_sh_state_export_includes_known_user_state() {
+  begin_test "agent.sh state export includes codex, agentctl, and claude state"
+
+  local temp_home
+  local tar_file
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  tar_file="$temp_home/state.tar"
+
+  mkdir -p \
+    "$temp_home/home/.codex" \
+    "$temp_home/home/.config/agentctl" \
+    "$temp_home/home/.claude"
+  printf '%s' 'codex-auth' >"$temp_home/home/.codex/auth.json"
+  printf '%s' 'claude' >"$temp_home/home/.config/agentctl/preferred-runtime"
+  printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$temp_home/home/.claude/.credentials.json"
+  printf '%s' '{"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
+
+  env -i \
+    "HOME=$temp_home/home" \
+    "XDG_CONFIG_HOME=$temp_home/home/.config" \
+    "PATH=/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state export >"$tar_file"
+
+  tar -tf "$tar_file" | grep -Fx '.codex/auth.json' >/dev/null || fail "Expected .codex/auth.json in exported state"
+  tar -tf "$tar_file" | grep -Fx '.config/agentctl/preferred-runtime' >/dev/null || fail "Expected preferred runtime in exported state"
+  tar -tf "$tar_file" | grep -Fx '.claude/.credentials.json' >/dev/null || fail "Expected Claude credentials in exported state"
+  tar -tf "$tar_file" | grep -Fx '.claude.json' >/dev/null || fail "Expected Claude home state in exported state"
+}
+
+test_agent_sh_state_export_uses_installed_runtime_hooks() {
+  begin_test "agent.sh state export uses installed runtime hooks instead of sweeping legacy runtime state"
+
+  local temp_home
+  local fake_bin
+  local tar_file
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  tar_file="$temp_home/state.tar"
+  fake_bin="$(make_fake_runtime_bin "$temp_home" codex)"
+
+  mkdir -p \
+    "$temp_home/home/.codex" \
+    "$temp_home/home/.claude" \
+    "$temp_home/home/.config/agentctl"
+  printf '%s' 'codex-auth' >"$temp_home/home/.codex/auth.json"
+  printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$temp_home/home/.claude/.credentials.json"
+  printf '%s' '{"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
+  printf '%s' 'codex' >"$temp_home/home/.config/agentctl/preferred-runtime"
+
+  env -i \
+    "HOME=$temp_home/home" \
+    "XDG_CONFIG_HOME=$temp_home/home/.config" \
+    "PATH=$fake_bin:/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state export >"$tar_file"
+
+  tar -tf "$tar_file" | grep -Fx '.codex/auth.json' >/dev/null || fail "Expected installed Codex runtime state in exported state"
+  tar -tf "$tar_file" | grep -Fx '.config/agentctl/preferred-runtime' >/dev/null || fail "Expected generic agentctl state in exported state"
+  if tar -tf "$tar_file" | grep -Fqx '.claude/.credentials.json'; then
+    fail "Did not expect Claude legacy state to be exported when only Codex is installed"
+  fi
+  if tar -tf "$tar_file" | grep -Fqx '.claude.json'; then
+    fail "Did not expect Claude home state to be exported when only Codex is installed"
+  fi
+}
+
+test_agent_sh_state_import_restores_known_user_state() {
+  begin_test "agent.sh state import restores codex, agentctl, and claude state"
+
+  local source_home
+  local target_home
+  local tar_file
+  source_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  target_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$source_home"
+  register_dir_cleanup "$target_home"
+  tar_file="$source_home/state.tar"
+
+  mkdir -p \
+    "$source_home/home/.codex" \
+    "$source_home/home/.config/agentctl" \
+    "$source_home/home/.claude"
+  printf '%s' 'codex-auth' >"$source_home/home/.codex/auth.json"
+  printf '%s' 'claude' >"$source_home/home/.config/agentctl/preferred-runtime"
+  printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$source_home/home/.claude/.credentials.json"
+  printf '%s' '{"hasCompletedOnboarding":true}' >"$source_home/home/.claude.json"
+
+  env -i \
+    "HOME=$source_home/home" \
+    "XDG_CONFIG_HOME=$source_home/home/.config" \
+    "PATH=/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state export >"$tar_file"
+
+  env -i \
+    "HOME=$target_home/home" \
+    "XDG_CONFIG_HOME=$target_home/home/.config" \
+    "PATH=/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state import <"$tar_file"
+
+  [ "$(cat "$target_home/home/.codex/auth.json")" = "codex-auth" ] || fail "Expected Codex auth to be restored"
+  [ "$(cat "$target_home/home/.config/agentctl/preferred-runtime")" = "claude" ] || fail "Expected preferred runtime to be restored"
+  jq -er '.claudeAiOauth.refreshToken == "b"' "$target_home/home/.claude/.credentials.json" >/dev/null || fail "Expected Claude credentials to be restored"
+  jq -er '.hasCompletedOnboarding == true' "$target_home/home/.claude.json" >/dev/null || fail "Expected Claude home state to be restored"
+}
+
+test_agent_sh_state_import_uses_installed_runtime_hooks() {
+  begin_test "agent.sh state import clears only installed runtime state plus generic agentctl state"
+
+  local source_home
+  local target_home
+  local fake_bin
+  local tar_file
+  source_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  target_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$source_home"
+  register_dir_cleanup "$target_home"
+  tar_file="$source_home/state.tar"
+  fake_bin="$(make_fake_runtime_bin "$target_home" codex)"
+
+  mkdir -p \
+    "$source_home/home/.codex" \
+    "$source_home/home/.config/agentctl"
+  printf '%s' 'codex-auth' >"$source_home/home/.codex/auth.json"
+  printf '%s' 'codex' >"$source_home/home/.config/agentctl/preferred-runtime"
+
+  env -i \
+    "HOME=$source_home/home" \
+    "XDG_CONFIG_HOME=$source_home/home/.config" \
+    "PATH=/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state export >"$tar_file"
+
+  mkdir -p "$target_home/home/.codex" "$target_home/home/.claude"
+  printf '%s' 'stale-codex' >"$target_home/home/.codex/auth.json"
+  printf '%s' '{"claudeAiOauth":{"accessToken":"stale","refreshToken":"keep","expiresAt":1}}' >"$target_home/home/.claude/.credentials.json"
+
+  env -i \
+    "HOME=$target_home/home" \
+    "XDG_CONFIG_HOME=$target_home/home/.config" \
+    "PATH=$fake_bin:/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state import <"$tar_file"
+
+  [ "$(cat "$target_home/home/.codex/auth.json")" = "codex-auth" ] || fail "Expected installed Codex runtime state to be restored"
+  [ "$(cat "$target_home/home/.config/agentctl/preferred-runtime")" = "codex" ] || fail "Expected generic agentctl state to be restored"
+  jq -er '.claudeAiOauth.refreshToken == "keep"' "$target_home/home/.claude/.credentials.json" >/dev/null || fail "Expected unrelated Claude legacy state to remain untouched when Claude is not installed"
+}
+
+test_agent_sh_state_import_with_empty_stdin_preserves_existing_state() {
+  begin_test "agent.sh state import with empty stdin preserves existing state"
+
+  local temp_home
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  mkdir -p "$temp_home/home/.codex"
+  printf '%s' 'keep-me' >"$temp_home/home/.codex/auth.json"
+
+  env -i \
+    "HOME=$temp_home/home" \
+    "XDG_CONFIG_HOME=$temp_home/home/.config" \
+    "PATH=/usr/bin:/bin" \
+    "AGENTCTL_RUNTIME_REGISTRY_DIR=$TEST_ROOT/runtimes.d" \
+    "AGENTCTL_RUNTIME_ADAPTER_DIR=$TEST_ROOT/runtimes" \
+    "AGENTCTL_FEATURE_REGISTRY_DIR=$TEST_ROOT/features.d" \
+    "AGENTCTL_FEATURE_ADAPTER_DIR=$TEST_ROOT/features" \
+    /bin/bash "$TEST_ROOT/agent.sh" state import </dev/null
+
+  [ "$(cat "$temp_home/home/.codex/auth.json")" = "keep-me" ] || fail "Expected existing state to survive empty state import"
 }
 
 test_container_auth_info_uses_agent_sh_auth_read() {
@@ -1883,6 +2144,127 @@ test_write_auth_blob_to_container_uses_agent_sh_auth_write() {
   assert_status 0
   grep -Fxq '{"refresh_token":"write-token"}' "$payload_file" || fail "Expected auth payload to be piped through agent.sh auth write"
   grep -Fq '/usr/local/bin/agent.sh auth write codex json_refresh_token' "$exec_log_file" || fail "Expected auth write via agent.sh"
+}
+
+test_write_auth_blob_to_container_falls_back_for_legacy_codex() {
+  begin_test "write_auth_blob_to_container falls back for legacy codex auth writes"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local exec_log_file
+  local fallback_payload_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-write.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  exec_log_file="$temp_dir/exec.log"
+  fallback_payload_file="$temp_dir/fallback.json"
+
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start|stop)
+        ;;
+      exec)
+        shift
+        local capture_stdin=0
+        if [ "$1" = "-i" ]; then
+          shift
+          capture_stdin=1
+        fi
+        if [ "$1" = "-u" ]; then
+          shift 2
+        fi
+        if [ "$1" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        printf '%s\n' "$*" >>"$exec_log_file"
+        if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
+          printf '%s\n' "mkdir: can't create directory '/home/coder/.config/agentctl': Permission denied" >&2
+          cat >/dev/null
+          return 1
+        fi
+        if [[ "$*" == "sh -lc mkdir -p /home/coder/.codex && cat > /home/coder/.codex/auth.json && chown -R coder:coder /home/coder/.codex" ]]; then
+          cat >"$fallback_payload_file"
+          return 0
+        fi
+        if [ "$capture_stdin" -eq 1 ]; then
+          cat >/dev/null
+        fi
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture write_auth_blob_to_container unit-test-container '{"refresh_token":"write-token"}' codex json_refresh_token
+  assert_status 0
+  assert_contains "Warning: Using legacy Codex auth refresh fallback for unit-test-container. Run: "
+  assert_not_contains "Permission denied"
+  grep -Fq '/usr/local/bin/agent.sh auth write codex json_refresh_token' "$exec_log_file" || fail "Expected initial auth write attempt via agent.sh"
+  grep -Fq 'mkdir -p /home/coder/.codex && cat > /home/coder/.codex/auth.json' "$exec_log_file" || fail "Expected legacy codex auth fallback write"
+  grep -Fxq '{"refresh_token":"write-token"}' "$fallback_payload_file" || fail "Expected fallback payload to be written"
+}
+
+test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error() {
+  begin_test "write_auth_blob_to_container does not fall back on non-legacy auth write errors"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local exec_log_file
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-auth-write.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  exec_log_file="$temp_dir/exec.log"
+
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start|stop)
+        ;;
+      exec)
+        shift
+        if [ "$1" = "-i" ]; then
+          shift
+        fi
+        if [ "$1" = "-u" ]; then
+          shift 2
+        fi
+        if [ "$1" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        printf '%s\n' "$*" >>"$exec_log_file"
+        if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
+          printf '%s\n' "invalid auth payload for codex" >&2
+          cat >/dev/null
+          return 1
+        fi
+        if [[ "$*" == "sh -lc mkdir -p /home/coder/.codex && cat > /home/coder/.codex/auth.json && chown -R coder:coder /home/coder/.codex" ]]; then
+          fail "Legacy fallback should not run for non-legacy auth write errors"
+        fi
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture write_auth_blob_to_container unit-test-container '{"refresh_token":"write-token"}' codex json_refresh_token
+  assert_status 1
+  assert_contains "invalid auth payload for codex"
+  assert_not_contains "Using legacy Codex auth refresh fallback"
 }
 
 test_sync_runtime_auth_to_container_uses_runtime_parameters() {
@@ -2550,6 +2932,56 @@ EOF
   assert_contains "agentctl upgrade --name unit-test-container --image $DEFAULT_IMAGE --cpu 4 --mem 8G"
 }
 
+test_upgrade_rejects_no_backup_for_legacy_source() {
+  begin_test "upgrade rejects --no-backup for legacy source containers"
+
+  local harness
+  local script
+
+  harness="$(mktemp "${TMPDIR:-/tmp}/codexctl-unit.XXXXXX")"
+  register_dir_cleanup "$harness"
+  sed -e "s#^SCRIPT_DIR=.*#SCRIPT_DIR=\"$TEST_ROOT\"#" \
+    -e '/^cmd="${1:-}"/,$d' \
+    "$CODEXCTL" >"$harness"
+
+  script="$(mktemp "${TMPDIR:-/tmp}/codexctl-unit-script.XXXXXX")"
+  register_dir_cleanup "$script"
+  cat >"$script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$harness"
+require_container() { return 0; }
+default_name() { printf 'unit-test-container\n'; }
+container_exists() { [ "\$1" = "unit-test-container" ]; }
+container_running() { return 1; }
+image_exists() { return 0; }
+require_container_backup_support() { return 0; }
+warn_upgrade_package_loss() { :; }
+container_supports_state_contract() { return 1; }
+CONTAINER_CMD=container
+container() {
+  case "\$1" in
+    inspect)
+      printf 'placeholder\n'
+      ;;
+    *)
+      echo "unexpected container invocation: \$*" >&2
+      exit 1
+      ;;
+  esac
+}
+container_upgrade_info() {
+  printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+}
+upgrade_cmd --name unit-test-container --no-backup
+EOF
+  chmod +x "$script"
+
+  run_capture bash "$script"
+  assert_status 1
+  assert_contains "Legacy source containers require a backup image for upgrade safety. Re-run without --no-backup."
+}
+
 test_upgrade_uses_explicit_resource_overrides() {
   begin_test "upgrade prefers explicit --cpu/--mem over inspected values"
 
@@ -2563,12 +2995,14 @@ test_upgrade_uses_explicit_resource_overrides() {
   require_container() { return 0; }
   default_name() { printf 'unit-test-container\n'; }
   require_container_backup_support() { return 0; }
+  container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
   restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   date() { printf '20260406120000\n'; }
@@ -2614,6 +3048,906 @@ test_upgrade_uses_explicit_resource_overrides() {
   [ "$start_calls" -eq 2 ] || fail "Expected 2 start calls, got: $start_calls"
   [ "$stop_calls" -eq 2 ] || fail "Expected 2 stop calls, got: $stop_calls"
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
+}
+
+test_upgrade_can_rename_container_during_recreation() {
+  begin_test "upgrade can recreate the container under a new name"
+
+  load_codexctl_functions
+
+  local create_args=""
+  local start_log=""
+  local stop_log=""
+  local rm_log=""
+  local persisted_baseline_name=""
+  local restored_name=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  warn_upgrade_package_loss() { :; }
+  container_supports_state_contract() { return 0; }
+  container_exists() {
+    case "$1" in
+      unit-test-container) return 0 ;;
+      renamed-container) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { restored_name="$1"; }
+  persist_container_system_manifest_baseline_from_image() { persisted_baseline_name="$1"; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  date() { printf '20260406120000\n'; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        shift
+        create_args="$(printf '%s\n' "$*")"
+        ;;
+      start)
+        start_log="${start_log}${2}"$'\n'
+        ;;
+      stop)
+        stop_log="${stop_log}${2}"$'\n'
+        ;;
+      rm)
+        rm_log="${rm_log}${2}"$'\n'
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'codex\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --new-name renamed-container --no-backup
+  assert_status 0
+  assert_contains "Removing container: unit-test-container"
+  assert_contains "Recreating container: renamed-container"
+  assert_contains "Starting container: renamed-container"
+  assert_contains "Restoring user state into renamed-container"
+  assert_contains "Upgrade complete: renamed-container (backup skipped)"
+  assert_contains "run --name renamed-container --reset-config"
+  printf '%s\n' "$create_args" | grep -F -- "--name renamed-container" >/dev/null || fail "Expected create args to include renamed container, got: $create_args"
+  printf '%s\n' "$rm_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected removal of source container, got: $rm_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container to start for backup, got: $start_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "renamed-container" >/dev/null || fail "Expected renamed container to start after recreation, got: $start_log"
+  printf '%s\n' "$stop_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container to stop after backup, got: $stop_log"
+  printf '%s\n' "$stop_log" | grep -Fx -- "renamed-container" >/dev/null || fail "Expected renamed container to stop after recreation, got: $stop_log"
+  [ "$persisted_baseline_name" = "renamed-container" ] || fail "Expected baseline persistence on renamed container, got: $persisted_baseline_name"
+  [ "$restored_name" = "renamed-container" ] || fail "Expected config restore on renamed container, got: $restored_name"
+}
+
+test_upgrade_copy_keeps_running_source_container() {
+  begin_test "upgrade copy keeps the source container and creates a new target"
+
+  load_codexctl_functions
+
+  local create_args=""
+  local start_log=""
+  local stop_log=""
+  local rm_log=""
+  local persisted_baseline_name=""
+  local restored_name=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  warn_upgrade_package_loss() { :; }
+  container_supports_state_contract() { return 0; }
+  container_exists() {
+    case "$1" in
+      unit-test-container) return 0 ;;
+      copied-container) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  container_running() {
+    [ "$1" = "unit-test-container" ]
+  }
+  image_exists() { return 0; }
+  backup_codex_config() { :; }
+  restore_codex_config() { restored_name="$1"; }
+  persist_container_system_manifest_baseline_from_image() { persisted_baseline_name="$1"; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { fail "copy mode should not build a backup image"; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        shift
+        create_args="$(printf '%s\n' "$*")"
+        ;;
+      start)
+        start_log="${start_log}${2}"$'\n'
+        ;;
+      stop)
+        stop_log="${stop_log}${2}"$'\n'
+        ;;
+      rm)
+        rm_log="${rm_log}${2}"$'\n'
+        ;;
+      export)
+        fail "copy mode should not export a backup image"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'codex\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --new-name copied-container --copy
+  assert_status 0
+  assert_contains "Backing up user state from unit-test-container"
+  assert_contains "Creating copy: copied-container"
+  assert_contains "Starting container: copied-container"
+  assert_contains "Restoring user state into copied-container"
+  assert_contains "Copy complete: copied-container (source preserved)"
+  printf '%s\n' "$create_args" | grep -F -- "--name copied-container" >/dev/null || fail "Expected create args to include copied container, got: $create_args"
+  [ -z "$rm_log" ] || fail "Expected source container to remain present, got rm log: $rm_log"
+  if printf '%s\n' "$stop_log" | grep -Fx -- "unit-test-container" >/dev/null; then
+    fail "Expected running source container to remain running during copy"
+  fi
+  printf '%s\n' "$start_log" | grep -Fx -- "copied-container" >/dev/null || fail "Expected copied container to start, got: $start_log"
+  [ "$persisted_baseline_name" = "copied-container" ] || fail "Expected baseline persistence on copied container, got: $persisted_baseline_name"
+  [ "$restored_name" = "copied-container" ] || fail "Expected restore on copied container, got: $restored_name"
+}
+
+test_upgrade_copy_requires_new_name() {
+  begin_test "upgrade copy requires a new target name"
+
+  local harness
+  local script
+
+  harness="$(mktemp "${TMPDIR:-/tmp}/codexctl-unit.XXXXXX")"
+  register_dir_cleanup "$harness"
+  sed -e "s#^SCRIPT_DIR=.*#SCRIPT_DIR=\"$TEST_ROOT\"#" \
+    -e '/^cmd="${1:-}"/,$d' \
+    "$CODEXCTL" >"$harness"
+
+  script="$(mktemp "${TMPDIR:-/tmp}/codexctl-unit-script.XXXXXX")"
+  register_dir_cleanup "$script"
+  cat >"$script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$harness"
+require_container() { return 0; }
+default_name() { printf 'unit-test-container\n'; }
+upgrade_cmd --name unit-test-container --copy
+EOF
+  chmod +x "$script"
+
+  run_capture bash "$script"
+  assert_status 1
+  assert_contains "Copy mode requires --new-name."
+}
+
+test_upgrade_dry_run_reports_plan_without_recreating_container() {
+  begin_test "upgrade dry-run reports the plan without recreating the container"
+
+  load_codexctl_functions
+
+  local create_calls=0
+  local export_calls=0
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_exists() {
+    case "$1" in
+      unit-test-container) return 0 ;;
+      renamed-container) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  date() { printf '20260406120000\n'; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_calls=$((create_calls + 1))
+        ;;
+      export)
+        export_calls=$((export_calls + 1))
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        fail "dry-run should not exec into the source container when the original workdir is missing"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-python:latest\t/does/not/exist\tro\t2\t4294967296\n'
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --new-name renamed-container --image agent-python --workdir "$TEST_ROOT" --dry-run
+  assert_status 0
+  assert_contains "Warning: Skipping package-loss warning because original /workdir source does not exist and unit-test-container is stopped"
+  assert_contains "Dry run: upgrade plan for unit-test-container -> renamed-container"
+  assert_contains "  Source image: agent-python"
+  assert_contains "  Target image: agent-python"
+  assert_contains "  Source workdir: /does/not/exist"
+  assert_contains "  Target workdir: $TEST_ROOT"
+  assert_contains "  Mount mode: read-only"
+  assert_contains "  CPU: 2 -> 2"
+  assert_contains "  Memory: 4G -> 4G"
+  assert_contains "  Config backup: export existing container filesystem and recover user state from it"
+  assert_contains "  Backup image: renamed-container-backup-20260406120000"
+  assert_contains "  Actions: remove unit-test-container and recreate it as renamed-container"
+  assert_contains "Dry run complete: no container changes applied"
+  [ "$create_calls" -eq 0 ] || fail "Expected no create calls during dry-run, got: $create_calls"
+  [ "$export_calls" -eq 0 ] || fail "Expected no export calls during dry-run, got: $export_calls"
+  [ "$start_calls" -eq 0 ] || fail "Expected no start calls during dry-run, got: $start_calls"
+  [ "$stop_calls" -eq 0 ] || fail "Expected no stop calls during dry-run, got: $stop_calls"
+  [ "$rm_calls" -eq 0 ] || fail "Expected no rm calls during dry-run, got: $rm_calls"
+}
+
+test_upgrade_copy_dry_run_reports_copy_plan() {
+  begin_test "upgrade copy dry-run reports copy actions without recreating containers"
+
+  load_codexctl_functions
+
+  local create_calls=0
+  local export_calls=0
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  warn_upgrade_package_loss() { :; }
+  container_supports_state_contract() { return 0; }
+  container_exists() {
+    case "$1" in
+      unit-test-container) return 0 ;;
+      copied-container) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  container_running() { [ "$1" = "unit-test-container" ]; }
+  image_exists() { return 0; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_calls=$((create_calls + 1))
+        ;;
+      export)
+        export_calls=$((export_calls + 1))
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-python:latest\t%s\tro\t2\t4294967296\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --new-name copied-container --copy --image agent-python --dry-run
+  assert_status 0
+  assert_contains "Dry run: upgrade plan for unit-test-container -> copied-container"
+  assert_contains "  Backup image: not needed (source preserved)"
+  assert_contains "  Actions: keep unit-test-container and create copied-container as a copy"
+  assert_contains "Dry run complete: no container changes applied"
+  [ "$create_calls" -eq 0 ] || fail "Expected no create calls during dry-run, got: $create_calls"
+  [ "$export_calls" -eq 0 ] || fail "Expected no export calls during dry-run, got: $export_calls"
+  [ "$start_calls" -eq 0 ] || fail "Expected no start calls during dry-run, got: $start_calls"
+  [ "$stop_calls" -eq 0 ] || fail "Expected no stop calls during dry-run, got: $stop_calls"
+  [ "$rm_calls" -eq 0 ] || fail "Expected no rm calls during dry-run, got: $rm_calls"
+}
+
+test_upgrade_warns_about_added_packages_missing_from_target_image() {
+  begin_test "upgrade warns only for extra packages absent from the target image"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() {
+    case "$1" in
+      agent-plain|agent-python) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  temporary_system_manifest_container_name() {
+    case "$1" in
+      target) printf 'target-manifest\n' ;;
+      source) printf 'source-manifest\n' ;;
+      *) printf 'manifest-%s\n' "$1" ;;
+    esac
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_log="${create_log}$(printf '%s\n' "$*")"$'\n'
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        case "$2" in
+          unit-test-container)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","ripgrep"]}\n'
+            ;;
+          source-manifest)
+            printf '{"package_manager":"apk","packages":["bash","git"]}\n'
+            ;;
+          target-manifest)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","python3"]}\n'
+            ;;
+          *)
+            fail "Unexpected manifest exec target: $2"
+            ;;
+        esac
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
+  assert_contains "  - ripgrep"
+  assert_not_contains "  - curl"
+  assert_not_contains "  - bash"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
+  [ "$start_calls" -eq 2 ] || fail "Expected 2 persisted start calls, got: $start_calls"
+  [ "$stop_calls" -eq 2 ] || fail "Expected 2 persisted stop calls, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 persisted rm call, got: $rm_calls"
+}
+
+test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
+  begin_test "upgrade reinstalls added runtimes and features in the target container"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local start_log=""
+  local stop_log=""
+  local rm_log=""
+  local root_call_log=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  warn_upgrade_package_loss() { :; }
+  upgrade_added_runtimes_json() { printf '["claude"]\n'; }
+  upgrade_added_features_json() { printf '["office"]\n'; }
+  container_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  run_agent_sh_in_container() {
+    if [ "$2" = "runtime" ] && [ "$3" = "info" ] && [ "$4" = "claude" ]; then
+      printf '{"runtime":"claude","installed":false,"capabilities":{"install":true}}\n'
+      return 0
+    fi
+    if [ "$2" = "feature" ] && [ "$3" = "info" ] && [ "$4" = "office" ]; then
+      printf '{"feature":"office","installed":false,"capabilities":{"install":true}}\n'
+      return 0
+    fi
+    fail "Unexpected run_agent_sh_in_container call: $*"
+  }
+  run_agent_sh_in_container_root() {
+    root_call_log="${root_call_log}$2 $3 $4"$'\n'
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_log="${create_log}$(printf '%s\n' "$*")"$'\n'
+        ;;
+      start)
+        start_log="${start_log}${2}"$'\n'
+        ;;
+      stop)
+        stop_log="${stop_log}${2}"$'\n'
+        ;;
+      rm)
+        rm_log="${rm_log}${2}"$'\n'
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Reinstalling added runtime in unit-test-container: claude"
+  assert_contains "Reinstalling added feature in unit-test-container: office"
+  printf '%s\n' "$root_call_log" | grep -Fx -- "runtime install claude" >/dev/null || fail "Expected runtime reinstall call, got: $root_call_log"
+  printf '%s\n' "$root_call_log" | grep -Fx -- "feature install office" >/dev/null || fail "Expected feature reinstall call, got: $root_call_log"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
+  printf '%s\n' "$rm_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected removal of source container, got: $rm_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container start for backup, got: $start_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected target container start after recreation, got: $start_log"
+  printf '%s\n' "$stop_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container stop after backup, got: $stop_log"
+}
+
+test_upgrade_warns_and_clears_missing_preferred_runtime() {
+  begin_test "upgrade warns and clears a preferred runtime that is unavailable in the target"
+
+  load_codexctl_functions
+
+  local cleared_name=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  warn_upgrade_package_loss() { :; }
+  upgrade_added_runtimes_json() { printf '[]\n'; }
+  upgrade_added_features_json() { printf '[]\n'; }
+  container_preferred_runtime() { printf 'claude\n'; }
+  target_default_runtime_for_upgrade() { printf 'codex\n'; }
+  container_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  clear_preferred_runtime_override_in_container() { cleared_name="$1"; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  run_agent_sh_in_container() {
+    if [ "$2" = "runtime" ] && [ "$3" = "info" ] && [ "$4" = "claude" ]; then
+      printf '{"runtime":"claude","installed":false,"capabilities":{"install":false}}\n'
+      return 0
+    fi
+    fail "Unexpected run_agent_sh_in_container call: $*"
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create|start|stop|rm)
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Warning: Preferred runtime claude is not available after upgrade; cleared the user override so unit-test-container will use codex"
+  [ "$cleared_name" = "unit-test-container" ] || fail "Expected preferred runtime override clear on target container, got: $cleared_name"
+}
+
+test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
+  begin_test "upgrade uses the stored baseline manifest when the current image is unavailable"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() {
+    case "$1" in
+      agent-python) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  container_baseline_manifest_json() {
+    printf '{"schema_version":2,"baseline_source":"image","image_ref":"agent-plain","package_manager":"apk","packages":["bash","git"],"installed_runtimes":["codex"],"installed_features":[],"default_runtime":"codex","preferred_runtime":"codex"}\n'
+  }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  temporary_system_manifest_container_name() {
+    case "$1" in
+      target) printf 'target-manifest\n' ;;
+      source) printf 'source-manifest\n' ;;
+      *) printf 'manifest-%s\n' "$1" ;;
+    esac
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_log="${create_log}$(printf '%s\n' "$*")"$'\n'
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        case "$2" in
+          unit-test-container)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","ripgrep"]}\n'
+            ;;
+          target-manifest)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","python3"]}\n'
+            ;;
+          source-manifest)
+            fail "Stored baseline should avoid source image inspection"
+            ;;
+          *)
+            fail "Unexpected manifest exec target: $2"
+            ;;
+        esac
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
+  assert_contains "  - ripgrep"
+  assert_not_contains "Current image agent-plain is not available locally"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
+  [ "$start_calls" -eq 2 ] || fail "Expected 2 start calls, got: $start_calls"
+  [ "$stop_calls" -eq 2 ] || fail "Expected 2 stop calls, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
+}
+
+test_upgrade_accepts_workdir_override_when_original_mount_is_missing() {
+  begin_test "upgrade can replace a missing workdir mount source"
+
+  load_codexctl_functions
+
+  local create_args=""
+  local export_calls=0
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  export_root_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  backup_codex_config() { fail "backup_codex_config should not be used when the original workdir is missing"; }
+  backup_codex_config_from_export() {
+    local extract_root="$3"
+    mkdir -p "$extract_root/home/coder/.codex"
+    ln -sf /etc/codexctl/image.md "$extract_root/home/coder/.codex/AGENTS.md"
+  }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        shift
+        create_args="$(printf '%s\n' "$*")"
+        ;;
+      export)
+        export_calls=$((export_calls + 1))
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        fail "upgrade should not exec into the stopped source container during export-backed recovery"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t/does/not/exist\trw\t2\t4G\n'
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --workdir "$TEST_ROOT" --no-backup
+  assert_status 0
+  assert_contains "Warning: Skipping package-loss warning because original /workdir source does not exist and unit-test-container is stopped"
+  assert_contains "Exporting container filesystem for state backup: unit-test-container"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_args" | grep -F -- "src=$TEST_ROOT,dst=/workdir" >/dev/null || fail "Expected recreated mount to use override workdir, got: $create_args"
+  [ "$export_calls" -eq 1 ] || fail "Expected 1 export call, got: $export_calls"
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call for recreated container, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call for recreated container, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
+}
+
+test_upgrade_allows_no_backup_for_modern_export_source() {
+  begin_test "upgrade allows --no-backup for a modern export-backed source"
+
+  load_codexctl_functions
+
+  local create_args=""
+  local export_calls=0
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+  local export_root
+  export_root="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-export-root.XXXXXX")"
+  register_dir_cleanup "$export_root"
+  mkdir -p "$export_root/usr/local/bin"
+  cat >"$export_root/usr/local/bin/agent.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'HELP'
+Usage:
+  agent.sh help
+  agent.sh state export
+  agent.sh state import
+HELP
+EOF
+  chmod +x "$export_root/usr/local/bin/agent.sh"
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  backup_codex_config() { fail "backup_codex_config should not be used when the original workdir is missing"; }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        shift
+        create_args="$(printf '%s\n' "$*")"
+        ;;
+      export)
+        export_calls=$((export_calls + 1))
+        tar -C "$export_root" -cf "$4" .
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        fail "upgrade should not exec into the stopped source container during export-backed recovery"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t/does/not/exist\trw\t2\t4G\n'
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --workdir "$TEST_ROOT" --no-backup
+  assert_status 0
+  assert_contains "Exporting container filesystem for state backup: unit-test-container"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  assert_not_contains "Legacy source containers require a backup image for upgrade safety"
+  printf '%s\n' "$create_args" | grep -F -- "src=$TEST_ROOT,dst=/workdir" >/dev/null || fail "Expected recreated mount to use override workdir, got: $create_args"
+  [ "$export_calls" -eq 1 ] || fail "Expected 1 export call, got: $export_calls"
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call for recreated container, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call for recreated container, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
+}
+
+test_container_baseline_manifest_starts_stopped_container_and_restores_state() {
+  begin_test "container_baseline_manifest_json starts a stopped container and restores stopped state"
+
+  load_codexctl_functions
+
+  local start_calls=0
+  local stop_calls=0
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      exec)
+        shift
+        if [ "${1:-}" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        case "$*" in
+          "test -f /etc/agentctl/system-manifest.json")
+            return 0
+            ;;
+          "cat /etc/agentctl/system-manifest.json")
+            printf '{"package_manager":"apk","packages":["bash"]}\n'
+            ;;
+          *)
+            fail "Unexpected container exec invocation: $*"
+            ;;
+        esac
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+
+  run_capture container_baseline_manifest_json unit-test-container
+  assert_status 0
+  assert_contains '"package_manager":"apk"'
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
 }
 
 test_refresh_updates_managed_files_without_recreate() {
@@ -2977,11 +4311,13 @@ main() {
   test_agent_sh_runtime_list_reports_installed_runtimes_only
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_claude_runtime_info_reports_skeleton_metadata
+  test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state
   test_agent_sh_claude_runtime_install_runs_native_installer
   test_agent_sh_claude_runtime_update_calls_claude_update
   test_agent_sh_claude_runtime_reset_config_restores_settings
   test_agent_sh_codex_run_defaults_to_workdir_cd
   test_agent_sh_codex_run_uses_runtime_profile_config
+  test_agent_sh_accepts_explicit_empty_runtime_config_json
   test_agent_sh_codex_run_uses_model_override
   test_agent_sh_claude_run_uses_local_ollama_defaults
   test_agent_sh_claude_run_respects_explicit_model
@@ -2992,12 +4328,20 @@ main() {
   test_agent_sh_preferred_set_rejects_uninstalled_runtime
   test_agent_sh_auth_read_rejects_invalid_codex_auth
   test_agent_sh_auth_write_rejects_invalid_codex_auth
+  test_agent_sh_auth_write_codex_does_not_require_user_config_dir
   test_agent_sh_claude_auth_read_includes_optional_home_state
   test_agent_sh_claude_auth_read_rejects_invalid_credentials
   test_agent_sh_claude_auth_write_restores_credentials_and_home_state
   test_agent_sh_claude_auth_write_rejects_invalid_payload
+  test_agent_sh_state_export_includes_known_user_state
+  test_agent_sh_state_export_uses_installed_runtime_hooks
+  test_agent_sh_state_import_restores_known_user_state
+  test_agent_sh_state_import_uses_installed_runtime_hooks
+  test_agent_sh_state_import_with_empty_stdin_preserves_existing_state
   test_container_auth_info_uses_agent_sh_auth_read
   test_write_auth_blob_to_container_uses_agent_sh_auth_write
+  test_write_auth_blob_to_container_falls_back_for_legacy_codex
+  test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error
   test_sync_runtime_auth_to_container_uses_runtime_parameters
   test_sync_runtime_auth_from_container_uses_runtime_parameters
   test_auth_info_from_json_parses_claude_oauth_payload
@@ -3012,7 +4356,20 @@ main() {
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check
   test_run_rejects_resource_flags_for_existing_container
+  test_upgrade_rejects_no_backup_for_legacy_source
   test_upgrade_uses_explicit_resource_overrides
+  test_upgrade_can_rename_container_during_recreation
+  test_upgrade_copy_keeps_running_source_container
+  test_upgrade_copy_requires_new_name
+  test_upgrade_dry_run_reports_plan_without_recreating_container
+  test_upgrade_copy_dry_run_reports_copy_plan
+  test_upgrade_warns_about_added_packages_missing_from_target_image
+  test_upgrade_reinstalls_added_runtimes_and_features_in_target
+  test_upgrade_warns_and_clears_missing_preferred_runtime
+  test_upgrade_uses_stored_baseline_when_current_image_is_missing
+  test_upgrade_accepts_workdir_override_when_original_mount_is_missing
+  test_upgrade_allows_no_backup_for_modern_export_source
+  test_container_baseline_manifest_starts_stopped_container_and_restores_state
   test_refresh_updates_managed_files_without_recreate
   test_refresh_container_file_streams_source_via_stdin
   test_system_manifest_starts_stopped_container_and_restores_state

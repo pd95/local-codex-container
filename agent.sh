@@ -5,9 +5,7 @@ readonly IMAGE_NAME="${IMAGE_NAME:-agent-plain}"
 readonly DEFAULT_RUNTIME_FILE="/etc/agentctl/preferred-runtime"
 readonly USER_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentctl"
 readonly USER_RUNTIME_FILE="${USER_CONFIG_DIR}/preferred-runtime"
-readonly CODEX_HOME_DIR="${HOME}/.codex"
-readonly CODEX_AUTH_FILE="${CODEX_HOME_DIR}/auth.json"
-readonly RUNTIME_CONFIG_JSON="${AGENTCTL_RUNTIME_CONFIG_JSON:-{}}"
+readonly RUNTIME_CONFIG_JSON="${AGENTCTL_RUNTIME_CONFIG_JSON-}"
 readonly MODEL_OVERRIDE="${AGENTCTL_MODEL_OVERRIDE:-}"
 readonly RUN_MODE="${AGENTCTL_RUN_MODE:-local}"
 readonly RUNTIME_REGISTRY_DIR="${AGENTCTL_RUNTIME_REGISTRY_DIR:-/etc/agentctl/runtimes.d}"
@@ -52,8 +50,8 @@ has_explicit_runtime_model() {
   return 1
 }
 
-ensure_user_dirs() {
-  mkdir -p "$USER_CONFIG_DIR" "$CODEX_HOME_DIR"
+ensure_user_config_dir() {
+  mkdir -p "$USER_CONFIG_DIR"
 }
 
 runtime_manifest_path() {
@@ -159,6 +157,17 @@ runtime_ids_installed() {
   done < <(runtime_ids)
 }
 
+feature_ids_installed() {
+  local feature
+
+  while IFS= read -r feature; do
+    [ -n "$feature" ] || continue
+    if [ "$(feature_installed_json "$feature")" = "true" ]; then
+      printf '%s\n' "$feature"
+    fi
+  done < <(feature_ids)
+}
+
 runtime_command_name() {
   runtime_manifest_string "$1" '.command'
 }
@@ -259,6 +268,7 @@ reset_runtime_hooks() {
     agent_runtime_install \
     agent_runtime_update \
     agent_runtime_reset_config \
+    agent_runtime_state_paths \
     agent_runtime_auth_read \
     agent_runtime_auth_write \
     agent_runtime_auth_login \
@@ -325,7 +335,13 @@ run_runtime() {
 }
 
 runtime_config_json() {
-  printf '%s' "$RUNTIME_CONFIG_JSON" | jq -c '
+  local config_json="$RUNTIME_CONFIG_JSON"
+
+  if [ -z "$config_json" ]; then
+    config_json='{}'
+  fi
+
+  printf '%s' "$config_json" | jq -c '
     if type == "object" then
       with_entries(.value |= if . == null then "" else tostring end)
     else
@@ -458,7 +474,7 @@ json_feature_info() {
 }
 
 json_system_manifest() {
-  local package_manager packages_json
+  local package_manager packages_json runtimes_json features_json default_runtime preferred_runtime
 
   if command -v apk >/dev/null 2>&1; then
     package_manager=apk
@@ -470,14 +486,124 @@ json_system_manifest() {
     package_manager=unknown
     packages_json='[]'
   fi
+  runtimes_json="$(runtime_ids_installed | jq -R . | jq -s .)"
+  features_json="$(feature_ids_installed | jq -R . | jq -s .)"
+  default_runtime="$(runtime_default)"
+  preferred_runtime="$(runtime_preferred)"
 
   jq -n \
     --arg package_manager "$package_manager" \
     --argjson packages "$packages_json" \
+    --argjson installed_runtimes "$runtimes_json" \
+    --argjson installed_features "$features_json" \
+    --arg default_runtime "$default_runtime" \
+    --arg preferred_runtime "$preferred_runtime" \
     '{
       package_manager: $package_manager,
-      packages: $packages
+      packages: $packages,
+      installed_runtimes: $installed_runtimes,
+      installed_features: $installed_features,
+      default_runtime: $default_runtime,
+      preferred_runtime: $preferred_runtime
     }'
+}
+
+state_unique_paths() {
+  awk 'NF && !seen[$0]++'
+}
+
+state_runtime_paths() {
+  local runtime="$1"
+
+  ensure_runtime_known "$runtime"
+  load_runtime_adapter "$runtime"
+  if declare -F agent_runtime_state_paths >/dev/null 2>&1; then
+    agent_runtime_state_paths "$runtime"
+  fi
+}
+
+state_legacy_paths() {
+  local codex_home_dir="${HOME}/.codex"
+  local claude_home_dir="${HOME}/.claude"
+  local claude_home_state_file="${HOME}/.claude.json"
+
+  [ -e "$codex_home_dir" ] && printf '%s\n' ".codex"
+  [ -e "$claude_home_dir" ] && printf '%s\n' ".claude"
+  [ -e "$claude_home_state_file" ] && printf '%s\n' ".claude.json"
+}
+
+state_export_paths() {
+  local installed_runtimes=""
+
+  [ -e "$USER_CONFIG_DIR" ] && printf '%s\n' ".config/agentctl"
+  installed_runtimes="$(runtime_ids_installed)"
+  if [ -n "$installed_runtimes" ]; then
+    printf '%s\n' "$installed_runtimes" | while IFS= read -r runtime; do
+      [ -n "$runtime" ] || continue
+      state_runtime_paths "$runtime"
+    done
+  else
+    state_legacy_paths
+  fi
+}
+
+state_import_paths() {
+  local installed_runtimes=""
+
+  printf '%s\n' ".config/agentctl"
+  installed_runtimes="$(runtime_ids_installed)"
+  if [ -n "$installed_runtimes" ]; then
+    printf '%s\n' "$installed_runtimes" | while IFS= read -r runtime; do
+      [ -n "$runtime" ] || continue
+      state_runtime_paths "$runtime"
+    done
+  else
+    printf '%s\n' ".codex" ".claude" ".claude.json"
+  fi
+}
+
+state_export() {
+  local -a paths=()
+  local path=""
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    paths+=("$path")
+  done < <(state_export_paths | state_unique_paths)
+
+  if [ "${#paths[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  tar -C "$HOME" -cf - "${paths[@]}"
+}
+
+state_import() {
+  local import_file=""
+  local path=""
+
+  if [ -t 0 ]; then
+    return 0
+  fi
+
+  import_file="$(mktemp)"
+  cat >"$import_file"
+  if [ ! -s "$import_file" ]; then
+    rm -f "$import_file"
+    return 0
+  fi
+  if ! tar -tf "$import_file" >/dev/null 2>&1; then
+    rm -f "$import_file"
+    die "invalid state import archive"
+  fi
+
+  mkdir -p "$HOME"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rm -rf "$HOME/$path"
+  done < <(state_import_paths | state_unique_paths)
+  tar -C "$HOME" -xf "$import_file"
+  rm -f "$import_file"
 }
 
 auth_read() {
@@ -545,7 +671,7 @@ preferred_get() {
 preferred_set() {
   local runtime="${1:-}"
   ensure_runtime_installed "$runtime"
-  ensure_user_dirs
+  ensure_user_config_dir
   printf '%s\n' "$runtime" >"$USER_RUNTIME_FILE"
 }
 
@@ -575,7 +701,6 @@ runtime_reset_config() {
 }
 
 refresh_agent() {
-  ensure_user_dirs
   jq -n \
     --arg preferred "$(runtime_preferred)" \
     --argjson runtimes "$(runtime_ids | jq -R . | jq -s .)" \
@@ -604,6 +729,8 @@ Usage:
   agent.sh auth login codex
   agent.sh auth read codex json_refresh_token
   agent.sh auth write codex json_refresh_token [VALUE]
+  agent.sh state export
+  agent.sh state import
   agent.sh system manifest
 EOF
 }
@@ -698,6 +825,19 @@ main() {
           ;;
         *)
           die "unknown auth command: ${1:-}"
+          ;;
+      esac
+      ;;
+    state)
+      case "${1:-}" in
+        export)
+          state_export
+          ;;
+        import)
+          state_import
+          ;;
+        *)
+          die "unknown state command: ${1:-}"
           ;;
       esac
       ;;
