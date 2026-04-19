@@ -126,6 +126,10 @@ For older source containers that do not support the modern `agent.sh state`
 contract, `upgrade --no-backup` is rejected. In that case keep the backup image
 enabled so the original container filesystem can be recovered if needed.
 
+When an upgrade detects runtimes or features that were added after the source
+image baseline and are still installable in the target image, it reinstalls
+them automatically before restoring user state.
+
 ## Snapshots and rebuilds
 
 - `--snapshot`: add a new timestamp tag without rebuilding

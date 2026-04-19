@@ -2751,6 +2751,38 @@ manifest_packages_json() {
   printf '%s' "$manifest" | jq -c '.packages // []' 2>/dev/null || printf '[]\n'
 }
 
+manifest_installed_runtimes_json() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -c '.installed_runtimes // []' 2>/dev/null || printf '[]\n'
+}
+
+manifest_installed_features_json() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -c '.installed_features // []' 2>/dev/null || printf '[]\n'
+}
+
+manifest_default_runtime() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -r '.default_runtime // ""' 2>/dev/null || printf '\n'
+}
+
+manifest_preferred_runtime() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -r '.preferred_runtime // ""' 2>/dev/null || printf '\n'
+}
+
 json_string_array_difference() {
   local left_json="${1:-[]}"
   local right_json="${2:-[]}"
@@ -2892,6 +2924,110 @@ image_system_manifest_json() {
   fi
 
   printf '%s\n' "$manifest"
+}
+
+upgrade_source_manifest_json() {
+  local name="$1"
+  local current_image="$2"
+  local target_image="$3"
+  local target_manifest="${4:-}"
+  local stored_manifest=""
+  local source_manifest=""
+
+  if stored_manifest="$(container_baseline_manifest_json "$name")"; then
+    source_manifest="$stored_manifest"
+  elif [ "$current_image" = "$target_image" ] && [ -n "$target_manifest" ]; then
+    source_manifest="$target_manifest"
+  elif image_exists "$current_image"; then
+    if ! source_manifest="$(image_system_manifest_json "$current_image" source)"; then
+      return 1
+    fi
+  else
+    return 1
+  fi
+
+  [ -n "$source_manifest" ] || return 1
+  printf '%s\n' "$source_manifest"
+}
+
+upgrade_added_runtimes_json() {
+  local name="$1"
+  local current_image="$2"
+  local target_image="$3"
+  local current_manifest=""
+  local source_manifest=""
+  local target_manifest=""
+
+  current_manifest="$(container_system_manifest_json "$name")" || return 1
+  target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
+  source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+
+  json_string_array_difference \
+    "$(json_string_array_difference "$(manifest_installed_runtimes_json "$current_manifest")" "$(manifest_installed_runtimes_json "$source_manifest")")" \
+    "$(manifest_installed_runtimes_json "$target_manifest")"
+}
+
+upgrade_added_features_json() {
+  local name="$1"
+  local current_image="$2"
+  local target_image="$3"
+  local current_manifest=""
+  local source_manifest=""
+  local target_manifest=""
+
+  current_manifest="$(container_system_manifest_json "$name")" || return 1
+  target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
+  source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+
+  json_string_array_difference \
+    "$(json_string_array_difference "$(manifest_installed_features_json "$current_manifest")" "$(manifest_installed_features_json "$source_manifest")")" \
+    "$(manifest_installed_features_json "$target_manifest")"
+}
+
+target_runtime_installable() {
+  local name="$1"
+  local runtime="$2"
+  local runtime_info=""
+
+  runtime_info="$(run_agent_sh_in_container "$name" runtime info "$runtime" 2>/dev/null)" || return 1
+  printf '%s' "$runtime_info" | jq -e '(.capabilities.install // false) == true' >/dev/null 2>&1
+}
+
+target_feature_installable() {
+  local name="$1"
+  local feature="$2"
+  local feature_info=""
+
+  feature_info="$(run_agent_sh_in_container "$name" feature info "$feature" 2>/dev/null)" || return 1
+  printf '%s' "$feature_info" | jq -e '(.capabilities.install // false) == true' >/dev/null 2>&1
+}
+
+reinstall_added_runtimes_and_features() {
+  local name="$1"
+  local added_runtimes_json="${2:-[]}"
+  local added_features_json="${3:-[]}"
+  local runtime=""
+  local feature=""
+
+  while IFS= read -r runtime; do
+    [ -n "$runtime" ] || continue
+    if target_runtime_installable "$name" "$runtime"; then
+      echo "Reinstalling added runtime in $name: $runtime" >&2
+      run_agent_sh_in_container_root "$name" runtime install "$runtime" || die "Failed to reinstall runtime during upgrade: $runtime"
+    else
+      warn "Target image cannot automatically reinstall added runtime: $runtime"
+    fi
+  done < <(printf '%s' "$added_runtimes_json" | jq -r '.[]' 2>/dev/null || true)
+
+  while IFS= read -r feature; do
+    [ -n "$feature" ] || continue
+    if target_feature_installable "$name" "$feature"; then
+      echo "Reinstalling added feature in $name: $feature" >&2
+      run_agent_sh_in_container_root "$name" feature install "$feature" || die "Failed to reinstall feature during upgrade: $feature"
+    else
+      warn "Target image cannot automatically reinstall added feature: $feature"
+    fi
+  done < <(printf '%s' "$added_features_json" | jq -r '.[]' 2>/dev/null || true)
 }
 
 persist_container_system_manifest_baseline() {
@@ -3911,6 +4047,8 @@ upgrade_cmd() {
   local used_export_for_config_backup=0
   local backup_mode=""
   local source_supports_state_contract=""
+  local added_runtimes_json='[]'
+  local added_features_json='[]'
   local inspect_info=""
 
   while [ $# -gt 0 ]; do
@@ -3998,6 +4136,8 @@ upgrade_cmd() {
     backup_mode="export"
   else
     warn_upgrade_package_loss "$name" "$current_image" "$image"
+    added_runtimes_json="$(upgrade_added_runtimes_json "$name" "$current_image" "$image" 2>/dev/null || printf '[]\n')"
+    added_features_json="$(upgrade_added_features_json "$name" "$current_image" "$image" 2>/dev/null || printf '[]\n')"
     if container_supports_state_contract "$name"; then
       source_supports_state_contract=1
     else
@@ -4139,6 +4279,8 @@ upgrade_cmd() {
   echo "Starting container: $target_name" >&2
   "$CONTAINER_CMD" start "$target_name" >/dev/null
   persist_container_system_manifest_baseline_from_image "$target_name" "$image"
+
+  reinstall_added_runtimes_and_features "$target_name" "$added_runtimes_json" "$added_features_json"
 
   echo "Restoring user state into $target_name" >&2
   restore_codex_config "$target_name" "$state_backup_file"

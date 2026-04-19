@@ -3170,6 +3170,92 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 persisted rm call, got: $rm_calls"
 }
 
+test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
+  begin_test "upgrade reinstalls added runtimes and features in the target container"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local start_log=""
+  local stop_log=""
+  local rm_log=""
+  local root_call_log=""
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  warn_upgrade_package_loss() { :; }
+  upgrade_added_runtimes_json() { printf '["claude"]\n'; }
+  upgrade_added_features_json() { printf '["office"]\n'; }
+  container_supports_state_contract() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  persist_container_system_manifest_baseline_from_image() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  run_agent_sh_in_container() {
+    if [ "$2" = "runtime" ] && [ "$3" = "info" ] && [ "$4" = "claude" ]; then
+      printf '{"runtime":"claude","installed":false,"capabilities":{"install":true}}\n'
+      return 0
+    fi
+    if [ "$2" = "feature" ] && [ "$3" = "info" ] && [ "$4" = "office" ]; then
+      printf '{"feature":"office","installed":false,"capabilities":{"install":true}}\n'
+      return 0
+    fi
+    fail "Unexpected run_agent_sh_in_container call: $*"
+  }
+  run_agent_sh_in_container_root() {
+    root_call_log="${root_call_log}$2 $3 $4"$'\n'
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_log="${create_log}$(printf '%s\n' "$*")"$'\n'
+        ;;
+      start)
+        start_log="${start_log}${2}"$'\n'
+        ;;
+      stop)
+        stop_log="${stop_log}${2}"$'\n'
+        ;;
+      rm)
+        rm_log="${rm_log}${2}"$'\n'
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Reinstalling added runtime in unit-test-container: claude"
+  assert_contains "Reinstalling added feature in unit-test-container: office"
+  printf '%s\n' "$root_call_log" | grep -Fx -- "runtime install claude" >/dev/null || fail "Expected runtime reinstall call, got: $root_call_log"
+  printf '%s\n' "$root_call_log" | grep -Fx -- "feature install office" >/dev/null || fail "Expected feature reinstall call, got: $root_call_log"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
+  printf '%s\n' "$rm_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected removal of source container, got: $rm_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container start for backup, got: $start_log"
+  printf '%s\n' "$start_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected target container start after recreation, got: $start_log"
+  printf '%s\n' "$stop_log" | grep -Fx -- "unit-test-container" >/dev/null || fail "Expected source container stop after backup, got: $stop_log"
+}
+
 test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   begin_test "upgrade uses the stored baseline manifest when the current image is unavailable"
 
@@ -3889,6 +3975,7 @@ main() {
   test_upgrade_dry_run_reports_plan_without_recreating_container
   test_upgrade_copy_dry_run_reports_copy_plan
   test_upgrade_warns_about_added_packages_missing_from_target_image
+  test_upgrade_reinstalls_added_runtimes_and_features_in_target
   test_upgrade_uses_stored_baseline_when_current_image_is_missing
   test_upgrade_accepts_workdir_override_when_original_mount_is_missing
   test_upgrade_allows_no_backup_for_modern_export_source
