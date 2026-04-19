@@ -78,8 +78,12 @@ This keeps the preserved `/workdir` mount and recreated container identity
 while switching the base image family underneath it.
 
 Before recreating the container, `upgrade` warns about extra OS packages that
-were added after the current image baseline and are not present in the target
-image, because those packages are not preserved automatically.
+were added after the container's stored baseline snapshot and are not present
+in the target image, because those packages are not preserved automatically.
+
+New containers and upgrades persist that baseline snapshot at
+`/etc/agentctl/system-manifest.json` so later upgrades can still compare
+against it even if the original image is no longer present locally.
 
 ## Snapshots and rebuilds
 
