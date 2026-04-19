@@ -2957,7 +2957,14 @@ container_running() { return 1; }
 image_exists() { return 0; }
 require_container_backup_support() { return 0; }
 warn_upgrade_package_loss() { :; }
-container_supports_state_contract() { return 1; }
+upgrade_added_runtimes_json() { printf '[]\n'; }
+upgrade_added_features_json() { printf '[]\n'; }
+image_system_manifest_json() { return 1; }
+collect_upgrade_container_preflight() {
+  UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+  UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+  UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=0
+}
 CONTAINER_CMD=container
 container() {
   case "\$1" in
@@ -3002,7 +3009,14 @@ test_upgrade_uses_explicit_resource_overrides() {
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
   restore_codex_config() { :; }
+  persist_container_system_manifest_baseline() { :; }
   persist_container_system_manifest_baseline_from_image() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   date() { printf '20260406120000\n'; }
@@ -3080,6 +3094,12 @@ test_upgrade_can_rename_container_during_recreation() {
   backup_codex_config() { :; }
   restore_codex_config() { restored_name="$1"; }
   persist_container_system_manifest_baseline_from_image() { persisted_baseline_name="$1"; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   date() { printf '20260406120000\n'; }
@@ -3164,6 +3184,12 @@ test_upgrade_copy_keeps_running_source_container() {
   backup_codex_config() { :; }
   restore_codex_config() { restored_name="$1"; }
   persist_container_system_manifest_baseline_from_image() { persisted_baseline_name="$1"; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { fail "copy mode should not build a backup image"; }
   trap() { :; }
@@ -3307,6 +3333,7 @@ test_upgrade_dry_run_reports_plan_without_recreating_container() {
 
   run_capture upgrade_cmd --name unit-test-container --new-name renamed-container --image agent-python --workdir "$TEST_ROOT" --dry-run
   assert_status 0
+  assert_contains "Preparing upgrade preflight: unit-test-container -> renamed-container"
   assert_contains "Warning: Skipping package-loss warning because original /workdir source does not exist and unit-test-container is stopped"
   assert_contains "Dry run: upgrade plan for unit-test-container -> renamed-container"
   assert_contains "  Source image: agent-python"
@@ -3341,7 +3368,12 @@ test_upgrade_copy_dry_run_reports_copy_plan() {
   require_container() { return 0; }
   default_name() { printf 'unit-test-container\n'; }
   warn_upgrade_package_loss() { :; }
-  container_supports_state_contract() { return 0; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   container_exists() {
     case "$1" in
       unit-test-container) return 0 ;;
@@ -3386,6 +3418,7 @@ test_upgrade_copy_dry_run_reports_copy_plan() {
 
   run_capture upgrade_cmd --name unit-test-container --new-name copied-container --copy --image agent-python --dry-run
   assert_status 0
+  assert_contains "Preparing upgrade preflight: unit-test-container -> copied-container"
   assert_contains "Dry run: upgrade plan for unit-test-container -> copied-container"
   assert_contains "  Backup image: not needed (source preserved)"
   assert_contains "  Actions: keep unit-test-container and create copied-container as a copy"
@@ -3422,7 +3455,13 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
   restore_codex_config() { :; }
+  persist_container_system_manifest_baseline() { :; }
   persist_container_system_manifest_baseline_from_image() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":["bash","git","curl","ripgrep"]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   temporary_system_manifest_container_name() {
@@ -3516,7 +3555,14 @@ test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
   restore_codex_config() { :; }
+  persist_container_system_manifest_baseline() { :; }
   persist_container_system_manifest_baseline_from_image() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   run_agent_sh_in_container() {
@@ -3602,6 +3648,12 @@ test_upgrade_warns_and_clears_missing_preferred_runtime() {
   restore_codex_config() { :; }
   clear_preferred_runtime_override_in_container() { cleared_name="$1"; }
   persist_container_system_manifest_baseline_from_image() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
   sanitize_image_name() { printf '%s\n' "$1"; }
   build_backup_image_from_export() { :; }
   run_agent_sh_in_container() {
@@ -3664,7 +3716,13 @@ test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
   restore_codex_config() { :; }
+  persist_container_system_manifest_baseline() { :; }
   persist_container_system_manifest_baseline_from_image() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":["bash","git","curl","ripgrep"]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST='{"schema_version":2,"baseline_source":"image","image_ref":"agent-plain","package_manager":"apk","packages":["bash","git"],"installed_runtimes":["codex"],"installed_features":[],"default_runtime":"codex","preferred_runtime":"codex"}'
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
   container_baseline_manifest_json() {
     printf '{"schema_version":2,"baseline_source":"image","image_ref":"agent-plain","package_manager":"apk","packages":["bash","git"],"installed_runtimes":["codex"],"installed_features":[],"default_runtime":"codex","preferred_runtime":"codex"}\n'
   }
@@ -3760,6 +3818,10 @@ test_upgrade_accepts_workdir_override_when_original_mount_is_missing() {
     local extract_root="$3"
     mkdir -p "$extract_root/home/coder/.codex"
     ln -sf /etc/codexctl/image.md "$extract_root/home/coder/.codex/AGENTS.md"
+  }
+  extract_export_root() {
+    local extract_root="$2"
+    mkdir -p "$extract_root/home/coder/.codex"
   }
   restore_codex_config() { :; }
   persist_container_system_manifest_baseline_from_image() { :; }
@@ -3948,6 +4010,70 @@ test_container_baseline_manifest_starts_stopped_container_and_restores_state() {
   assert_contains '"package_manager":"apk"'
   [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
   [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+}
+
+test_collect_upgrade_container_preflight_starts_stopped_container_once() {
+  begin_test "collect_upgrade_container_preflight reuses one start for manifest, baseline, and capability checks"
+
+  load_codexctl_functions
+
+  local start_calls=0
+  local stop_calls=0
+  local exec_log
+  exec_log="$(mktemp "${TMPDIR:-/tmp}/codexctl-preflight-exec.XXXXXX")"
+  register_dir_cleanup "$exec_log"
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      exec)
+        printf '%s\n' "$*" >>"$exec_log"
+        shift
+        if [ "${1:-}" = "unit-test-container" ]; then
+          shift
+        fi
+        if [ "${1:-}" = "setpriv" ]; then
+          shift 6
+        fi
+        case "$*" in
+          "bash /usr/local/bin/agent.sh system manifest")
+            printf '{"package_manager":"apk","packages":["bash"]}\n'
+            ;;
+          "test -f /etc/agentctl/system-manifest.json")
+            return 0
+            ;;
+          "cat /etc/agentctl/system-manifest.json")
+            printf '{"schema_version":2,"package_manager":"apk","packages":["bash"]}\n'
+            ;;
+          "bash /usr/local/bin/agent.sh help")
+            printf 'Usage:\n  agent.sh help\n  agent.sh state export\n'
+            ;;
+          *)
+            fail "Unexpected container exec invocation: $*"
+            ;;
+        esac
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_running() { return 1; }
+
+  collect_upgrade_container_preflight unit-test-container
+
+  [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
+  [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
+  [ "$(wc -l <"$exec_log" | tr -d '[:space:]')" = "4" ] || fail "Expected 4 exec calls, got: $(cat "$exec_log")"
+  [ "$UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT" -eq 1 ] || fail "Expected state contract support to be detected"
+  printf '%s' "$UPGRADE_PREFLIGHT_CONTAINER_MANIFEST" | jq -e '.packages == ["bash"]' >/dev/null 2>&1 || fail "Expected cached container manifest, got: $UPGRADE_PREFLIGHT_CONTAINER_MANIFEST"
+  printf '%s' "$UPGRADE_PREFLIGHT_BASELINE_MANIFEST" | jq -e '.schema_version == 2' >/dev/null 2>&1 || fail "Expected cached baseline manifest, got: $UPGRADE_PREFLIGHT_BASELINE_MANIFEST"
 }
 
 test_refresh_updates_managed_files_without_recreate() {
@@ -4370,6 +4496,7 @@ main() {
   test_upgrade_accepts_workdir_override_when_original_mount_is_missing
   test_upgrade_allows_no_backup_for_modern_export_source
   test_container_baseline_manifest_starts_stopped_container_and_restores_state
+  test_collect_upgrade_container_preflight_starts_stopped_container_once
   test_refresh_updates_managed_files_without_recreate
   test_refresh_container_file_streams_source_via_stdin
   test_system_manifest_starts_stopped_container_and_restores_state

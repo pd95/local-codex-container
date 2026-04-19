@@ -1768,6 +1768,49 @@ target_supports_state_contract() {
   "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh help 2>/dev/null | grep -Fq 'agent.sh state import'
 }
 
+UPGRADE_PREFLIGHT_CONTAINER_MANIFEST=""
+UPGRADE_PREFLIGHT_BASELINE_MANIFEST=""
+UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=0
+
+collect_upgrade_container_preflight() {
+  local name="$1"
+  local was_running=0
+  local started_for_preflight=0
+  local manifest=""
+  local baseline_manifest=""
+
+  UPGRADE_PREFLIGHT_CONTAINER_MANIFEST=""
+  UPGRADE_PREFLIGHT_BASELINE_MANIFEST=""
+  UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=0
+
+  if container_running "$name"; then
+    was_running=1
+  else
+    "$CONTAINER_CMD" start "$name" >/dev/null || return 1
+    started_for_preflight=1
+  fi
+
+  manifest="$("$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest 2>/dev/null || true)"
+  if [ -n "$manifest" ]; then
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST="$manifest"
+  fi
+
+  if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -f "$SYSTEM_BASELINE_MANIFEST_FILE" >/dev/null 2>&1; then
+    baseline_manifest="$("$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" cat "$SYSTEM_BASELINE_MANIFEST_FILE" 2>/dev/null || true)"
+    if [ -n "$baseline_manifest" ]; then
+      UPGRADE_PREFLIGHT_BASELINE_MANIFEST="$baseline_manifest"
+    fi
+  fi
+
+  if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh help 2>/dev/null | grep -Fq 'agent.sh state export'; then
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  fi
+
+  if [ "$started_for_preflight" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+    "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 || true
+  fi
+}
+
 codex_agents_state() {
   local name="$1"
   if "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" test -L /home/coder/.codex/AGENTS.md; then
@@ -3091,13 +3134,19 @@ upgrade_added_runtimes_json() {
   local name="$1"
   local current_image="$2"
   local target_image="$3"
-  local current_manifest=""
-  local source_manifest=""
-  local target_manifest=""
+  local current_manifest="${4:-}"
+  local source_manifest="${5:-}"
+  local target_manifest="${6:-}"
 
-  current_manifest="$(container_system_manifest_json "$name")" || return 1
-  target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
-  source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+  if [ -z "$current_manifest" ]; then
+    current_manifest="$(container_system_manifest_json "$name")" || return 1
+  fi
+  if [ -z "$target_manifest" ]; then
+    target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
+  fi
+  if [ -z "$source_manifest" ]; then
+    source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+  fi
 
   json_string_array_difference \
     "$(json_string_array_difference "$(manifest_installed_runtimes_json "$current_manifest")" "$(manifest_installed_runtimes_json "$source_manifest")")" \
@@ -3108,13 +3157,19 @@ upgrade_added_features_json() {
   local name="$1"
   local current_image="$2"
   local target_image="$3"
-  local current_manifest=""
-  local source_manifest=""
-  local target_manifest=""
+  local current_manifest="${4:-}"
+  local source_manifest="${5:-}"
+  local target_manifest="${6:-}"
 
-  current_manifest="$(container_system_manifest_json "$name")" || return 1
-  target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
-  source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+  if [ -z "$current_manifest" ]; then
+    current_manifest="$(container_system_manifest_json "$name")" || return 1
+  fi
+  if [ -z "$target_manifest" ]; then
+    target_manifest="$(image_system_manifest_json "$target_image" target)" || return 1
+  fi
+  if [ -z "$source_manifest" ]; then
+    source_manifest="$(upgrade_source_manifest_json "$name" "$current_image" "$target_image" "$target_manifest")" || return 1
+  fi
 
   json_string_array_difference \
     "$(json_string_array_difference "$(manifest_installed_features_json "$current_manifest")" "$(manifest_installed_features_json "$source_manifest")")" \
@@ -3141,17 +3196,21 @@ target_feature_installable() {
 
 container_preferred_runtime() {
   local name="$1"
-  local manifest=""
+  local manifest="${2:-}"
 
-  manifest="$(container_system_manifest_json "$name")" || return 1
+  if [ -z "$manifest" ]; then
+    manifest="$(container_system_manifest_json "$name")" || return 1
+  fi
   manifest_preferred_runtime "$manifest"
 }
 
 target_default_runtime_for_upgrade() {
   local target_image="$1"
-  local target_manifest=""
+  local target_manifest="${2:-}"
 
-  target_manifest="$(image_system_manifest_json "$target_image" target-preferred)" || return 1
+  if [ -z "$target_manifest" ]; then
+    target_manifest="$(image_system_manifest_json "$target_image" target-preferred)" || return 1
+  fi
   manifest_default_runtime "$target_manifest"
 }
 
@@ -3252,10 +3311,10 @@ warn_upgrade_package_loss() {
   local name="$1"
   local current_image="$2"
   local target_image="$3"
-  local current_manifest=""
-  local source_manifest=""
+  local current_manifest="${4:-}"
+  local source_manifest="${5:-}"
+  local target_manifest="${6:-}"
   local stored_manifest=""
-  local target_manifest=""
   local current_package_manager=""
   local source_package_manager=""
   local target_package_manager=""
@@ -3266,7 +3325,7 @@ warn_upgrade_package_loss() {
   local lost_packages_json='[]'
   local lost_count=""
 
-  if ! current_manifest="$(container_system_manifest_json "$name")"; then
+  if [ -z "$current_manifest" ] && ! current_manifest="$(container_system_manifest_json "$name")"; then
     warn "Unable to inspect installed OS packages in $name before upgrade"
     return 0
   fi
@@ -3277,25 +3336,27 @@ warn_upgrade_package_loss() {
     return 0
   fi
 
-  if ! target_manifest="$(image_system_manifest_json "$target_image" target)"; then
+  if [ -z "$target_manifest" ] && ! target_manifest="$(image_system_manifest_json "$target_image" target)"; then
     warn "Unable to inspect OS packages in target image $target_image before upgrade"
     return 0
   fi
   target_package_manager="$(manifest_package_manager "$target_manifest")"
   target_packages_json="$(manifest_packages_json "$target_manifest")"
 
-  if stored_manifest="$(container_baseline_manifest_json "$name")"; then
-    source_manifest="$stored_manifest"
-  elif [ "$current_image" = "$target_image" ]; then
-    source_manifest="$target_manifest"
-  elif image_exists "$current_image"; then
-    if ! source_manifest="$(image_system_manifest_json "$current_image" source)"; then
-      warn "Unable to inspect OS packages in current image $current_image; package warning may include image-provided packages"
+  if [ -z "$source_manifest" ]; then
+    if stored_manifest="$(container_baseline_manifest_json "$name")"; then
+      source_manifest="$stored_manifest"
+    elif [ "$current_image" = "$target_image" ]; then
+      source_manifest="$target_manifest"
+    elif image_exists "$current_image"; then
+      if ! source_manifest="$(image_system_manifest_json "$current_image" source)"; then
+        warn "Unable to inspect OS packages in current image $current_image; package warning may include image-provided packages"
+        added_packages_json="$current_packages_json"
+      fi
+    else
+      warn "Current image $current_image is not available locally; package warning may include image-provided packages"
       added_packages_json="$current_packages_json"
     fi
-  else
-    warn "Current image $current_image is not available locally; package warning may include image-provided packages"
-    added_packages_json="$current_packages_json"
   fi
 
   if [ -n "$source_manifest" ]; then
@@ -4212,6 +4273,9 @@ upgrade_cmd() {
   local added_features_json='[]'
   local current_preferred_runtime=""
   local target_default_runtime=""
+  local preflight_current_manifest=""
+  local preflight_source_manifest=""
+  local preflight_target_manifest=""
   local inspect_info=""
 
   while [ $# -gt 0 ]; do
@@ -4294,20 +4358,31 @@ upgrade_cmd() {
   if container_running "$name"; then
     was_running=1
   fi
+  echo "Preparing upgrade preflight: $name -> $target_name" >&2
   if [ "$was_running" -eq 0 ] && [ -n "$workdir_override" ] && [ ! -e "$current_workdir" ]; then
     warn "Skipping package-loss warning because original /workdir source does not exist and $name is stopped"
     backup_mode="export"
   else
-    warn_upgrade_package_loss "$name" "$current_image" "$image"
-    added_runtimes_json="$(upgrade_added_runtimes_json "$name" "$current_image" "$image" 2>/dev/null || printf '[]\n')"
-    added_features_json="$(upgrade_added_features_json "$name" "$current_image" "$image" 2>/dev/null || printf '[]\n')"
-    current_preferred_runtime="$(container_preferred_runtime "$name" 2>/dev/null || true)"
-    target_default_runtime="$(target_default_runtime_for_upgrade "$image" 2>/dev/null || true)"
-    if container_supports_state_contract "$name"; then
-      source_supports_state_contract=1
-    else
-      source_supports_state_contract=0
+    collect_upgrade_container_preflight "$name" || true
+    preflight_current_manifest="$UPGRADE_PREFLIGHT_CONTAINER_MANIFEST"
+    preflight_source_manifest="$UPGRADE_PREFLIGHT_BASELINE_MANIFEST"
+    source_supports_state_contract="$UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT"
+    preflight_target_manifest="$(image_system_manifest_json "$image" target 2>/dev/null || true)"
+    if [ -z "$preflight_source_manifest" ]; then
+      if [ "$current_image" = "$image" ] && [ -n "$preflight_target_manifest" ]; then
+        preflight_source_manifest="$preflight_target_manifest"
+      elif image_exists "$current_image"; then
+        preflight_source_manifest="$(image_system_manifest_json "$current_image" source 2>/dev/null || true)"
+      fi
     fi
+    warn_upgrade_package_loss "$name" "$current_image" "$image" \
+      "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest"
+    added_runtimes_json="$(upgrade_added_runtimes_json "$name" "$current_image" "$image" \
+      "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest" 2>/dev/null || printf '[]\n')"
+    added_features_json="$(upgrade_added_features_json "$name" "$current_image" "$image" \
+      "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest" 2>/dev/null || printf '[]\n')"
+    current_preferred_runtime="$(container_preferred_runtime "$name" "$preflight_current_manifest" 2>/dev/null || true)"
+    target_default_runtime="$(target_default_runtime_for_upgrade "$image" "$preflight_target_manifest" 2>/dev/null || true)"
     if [ "$was_running" -eq 0 ]; then
       backup_mode="start"
     else
@@ -4443,7 +4518,11 @@ upgrade_cmd() {
 
   echo "Starting container: $target_name" >&2
   "$CONTAINER_CMD" start "$target_name" >/dev/null
-  persist_container_system_manifest_baseline_from_image "$target_name" "$image"
+  if [ -n "$preflight_target_manifest" ]; then
+    persist_container_system_manifest_baseline "$target_name" "$preflight_target_manifest" "image" "$image"
+  else
+    persist_container_system_manifest_baseline_from_image "$target_name" "$image"
+  fi
 
   reinstall_added_runtimes_and_features "$target_name" "$added_runtimes_json" "$added_features_json"
 
