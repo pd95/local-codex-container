@@ -2459,6 +2459,100 @@ test_upgrade_uses_explicit_resource_overrides() {
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
 }
 
+test_upgrade_warns_about_added_packages_missing_from_target_image() {
+  begin_test "upgrade warns only for extra packages absent from the target image"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+  image_exists() {
+    case "$1" in
+      agent-plain|agent-python) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  restore_codex_config() { :; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  build_backup_image_from_export() { :; }
+  temporary_system_manifest_container_name() {
+    case "$1" in
+      target) printf 'target-manifest\n' ;;
+      source) printf 'source-manifest\n' ;;
+      *) printf 'manifest-%s\n' "$1" ;;
+    esac
+  }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_log="${create_log}$(printf '%s\n' "$*")"$'\n'
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        case "$2" in
+          unit-test-container)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","ripgrep"]}\n'
+            ;;
+          source-manifest)
+            printf '{"package_manager":"apk","packages":["bash","git"]}\n'
+            ;;
+          target-manifest)
+            printf '{"package_manager":"apk","packages":["bash","git","curl","python3"]}\n'
+            ;;
+          *)
+            fail "Unexpected manifest exec target: $2"
+            ;;
+        esac
+        ;;
+      export)
+        fail "export should not be called for --no-backup"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --image agent-python --no-backup
+  assert_status 0
+  assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
+  assert_contains "  - ripgrep"
+  assert_not_contains "  - curl"
+  assert_not_contains "  - bash"
+  assert_contains "Upgrade complete: unit-test-container (backup skipped)"
+  printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
+  [ "$start_calls" -eq 2 ] || fail "Expected 2 persisted start calls, got: $start_calls"
+  [ "$stop_calls" -eq 2 ] || fail "Expected 2 persisted stop calls, got: $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected 1 persisted rm call, got: $rm_calls"
+}
+
 test_refresh_updates_managed_files_without_recreate() {
   begin_test "refresh updates managed files and preserves stopped state"
 
@@ -2854,6 +2948,7 @@ main() {
   test_upgrade_backup_support_check
   test_run_rejects_resource_flags_for_existing_container
   test_upgrade_uses_explicit_resource_overrides
+  test_upgrade_warns_about_added_packages_missing_from_target_image
   test_refresh_updates_managed_files_without_recreate
   test_refresh_container_file_streams_source_via_stdin
   test_system_manifest_starts_stopped_container_and_restores_state

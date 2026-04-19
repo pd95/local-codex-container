@@ -646,6 +646,10 @@ Options:
   --backup-image NAME Backup image name for container export (default: <name>-backup-<timestamp>)
   --no-backup         Skip container export backup image creation
   --overwrite-config  Replace ~/.codex/config.toml and local_models.json from the upgraded image and recreate ~/.codex/AGENTS.md as a symlink
+
+Upgrade recreates the container from the target image. Before recreation, it
+warns about extra OS packages installed after the current image baseline when
+those packages are not present in the target image.
 EOF
 }
 
@@ -2511,8 +2515,6 @@ use_cmd() {
 
 system_manifest_cmd() {
   local name=""
-  local was_running=0
-  local started_for_manifest=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2530,6 +2532,48 @@ system_manifest_cmd() {
     die "Container not found: $name"
   fi
 
+  container_system_manifest_json "$name"
+}
+
+manifest_package_manager() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -r '.package_manager // "unknown"' 2>/dev/null || printf 'unknown\n'
+}
+
+manifest_packages_json() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -c '.packages // []' 2>/dev/null || printf '[]\n'
+}
+
+json_string_array_difference() {
+  local left_json="${1:-[]}"
+  local right_json="${2:-[]}"
+
+  jq -cn \
+    --arg left_json "$left_json" \
+    --arg right_json "$right_json" \
+    '
+      (($left_json | fromjson? // [])) as $left
+      | (($right_json | fromjson? // [])) as $right
+      | ($right | map({key: ., value: true}) | from_entries) as $right_index
+      | [($left // [])[] | select($right_index[.] != true)]
+      | unique
+      | sort
+    '
+}
+
+container_system_manifest_json() {
+  local name="$1"
+  local was_running=0
+  local started_for_manifest=0
+  local manifest=""
+
   if container_running "$name"; then
     was_running=1
   else
@@ -2537,11 +2581,141 @@ system_manifest_cmd() {
     started_for_manifest=1
   fi
 
-  "$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest
+  if ! manifest="$("$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest)"; then
+    if [ "$started_for_manifest" -eq 1 ] && [ "$was_running" -eq 0 ]; then
+      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
 
   if [ "$started_for_manifest" -eq 1 ] && [ "$was_running" -eq 0 ]; then
     "$CONTAINER_CMD" stop "$name" >/dev/null
   fi
+
+  printf '%s\n' "$manifest"
+}
+
+temporary_system_manifest_container_name() {
+  local role="${1:-image}"
+
+  sanitize_container_name "${CLI_NAME}-system-manifest-${role}-$$-${RANDOM:-0}"
+}
+
+image_system_manifest_json() {
+  local image="$1"
+  local role="${2:-image}"
+  local temp_name=""
+  local created=0
+  local started=0
+  local manifest=""
+
+  temp_name="$(temporary_system_manifest_container_name "$role")"
+  if ! "$CONTAINER_CMD" create -t --name "$temp_name" "$image" sh -c 'sleep infinity' >/dev/null; then
+    return 1
+  fi
+  created=1
+
+  if ! "$CONTAINER_CMD" start "$temp_name" >/dev/null; then
+    if [ "$created" -eq 1 ]; then
+      "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+  started=1
+
+  if ! manifest="$("$CONTAINER_CMD" exec "$temp_name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh system manifest)"; then
+    if [ "$started" -eq 1 ]; then
+      "$CONTAINER_CMD" stop "$temp_name" >/dev/null 2>&1 || true
+    fi
+    if [ "$created" -eq 1 ]; then
+      "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+
+  if [ "$started" -eq 1 ]; then
+    "$CONTAINER_CMD" stop "$temp_name" >/dev/null 2>&1 || true
+  fi
+  if [ "$created" -eq 1 ]; then
+    "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+  fi
+
+  printf '%s\n' "$manifest"
+}
+
+warn_upgrade_package_loss() {
+  local name="$1"
+  local current_image="$2"
+  local target_image="$3"
+  local current_manifest=""
+  local source_manifest=""
+  local target_manifest=""
+  local current_package_manager=""
+  local source_package_manager=""
+  local target_package_manager=""
+  local current_packages_json='[]'
+  local source_packages_json='[]'
+  local target_packages_json='[]'
+  local added_packages_json='[]'
+  local lost_packages_json='[]'
+  local lost_count=""
+
+  if ! current_manifest="$(container_system_manifest_json "$name")"; then
+    warn "Unable to inspect installed OS packages in $name before upgrade"
+    return 0
+  fi
+  current_package_manager="$(manifest_package_manager "$current_manifest")"
+  current_packages_json="$(manifest_packages_json "$current_manifest")"
+  if [ "$current_package_manager" = "unknown" ]; then
+    warn "Unable to determine the package manager in $name before upgrade"
+    return 0
+  fi
+
+  if ! target_manifest="$(image_system_manifest_json "$target_image" target)"; then
+    warn "Unable to inspect OS packages in target image $target_image before upgrade"
+    return 0
+  fi
+  target_package_manager="$(manifest_package_manager "$target_manifest")"
+  target_packages_json="$(manifest_packages_json "$target_manifest")"
+
+  if [ "$current_image" = "$target_image" ]; then
+    source_manifest="$target_manifest"
+  elif image_exists "$current_image"; then
+    if ! source_manifest="$(image_system_manifest_json "$current_image" source)"; then
+      warn "Unable to inspect OS packages in current image $current_image; package warning may include image-provided packages"
+      added_packages_json="$current_packages_json"
+    fi
+  else
+    warn "Current image $current_image is not available locally; package warning may include image-provided packages"
+    added_packages_json="$current_packages_json"
+  fi
+
+  if [ -n "$source_manifest" ]; then
+    source_package_manager="$(manifest_package_manager "$source_manifest")"
+    source_packages_json="$(manifest_packages_json "$source_manifest")"
+    if [ "$source_package_manager" = "$current_package_manager" ]; then
+      added_packages_json="$(json_string_array_difference "$current_packages_json" "$source_packages_json")"
+    else
+      warn "Current container package manager differs from its image baseline; package warning may include image-provided packages"
+      added_packages_json="$current_packages_json"
+    fi
+  fi
+
+  if [ "$current_package_manager" = "$target_package_manager" ]; then
+    lost_packages_json="$(json_string_array_difference "$added_packages_json" "$target_packages_json")"
+  else
+    lost_packages_json="$added_packages_json"
+  fi
+
+  lost_count="$(printf '%s' "$lost_packages_json" | jq -r 'length' 2>/dev/null || printf '0\n')"
+  [ "$lost_count" -gt 0 ] || return 0
+
+  if [ "$current_package_manager" = "$target_package_manager" ]; then
+    warn "Upgrade will remove $lost_count extra $current_package_manager package(s) not present in $target_image:"
+  else
+    warn "Upgrade changes package manager from $current_package_manager to $target_package_manager; reinstall these extra $current_package_manager packages manually if still needed:"
+  fi
+  printf '%s' "$lost_packages_json" | jq -r '.[] | "  - " + .' >&2
 }
 
 run_container() {
@@ -3349,6 +3523,7 @@ upgrade_cmd() {
   image_exists "$image" || die "Image not found: $image"
   [ -e "$workdir" ] || die "Preserved /workdir source does not exist: $workdir"
   [ -d "$workdir" ] || die "Preserved /workdir source is not a directory: $workdir"
+  warn_upgrade_package_loss "$name" "$current_image" "$image"
   if [ "$no_backup" -eq 0 ] && [ -z "$backup_image" ]; then
     backup_image="$(sanitize_image_name "${name}-backup-$(date -u +%Y%m%d%H%M%S)")"
   fi

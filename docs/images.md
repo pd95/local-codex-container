@@ -77,6 +77,10 @@ agentctl upgrade --name my-project --image agent-python --overwrite-config
 This keeps the preserved `/workdir` mount and recreated container identity
 while switching the base image family underneath it.
 
+Before recreating the container, `upgrade` warns about extra OS packages that
+were added after the current image baseline and are not present in the target
+image, because those packages are not preserved automatically.
+
 ## Snapshots and rebuilds
 
 - `--snapshot`: add a new timestamp tag without rebuilding
