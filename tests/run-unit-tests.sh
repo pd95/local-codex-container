@@ -2546,6 +2546,88 @@ test_upgrade_can_rename_container_during_recreation() {
   [ "$restored_name" = "renamed-container" ] || fail "Expected config restore on renamed container, got: $restored_name"
 }
 
+test_upgrade_dry_run_reports_plan_without_recreating_container() {
+  begin_test "upgrade dry-run reports the plan without recreating the container"
+
+  load_codexctl_functions
+
+  local create_calls=0
+  local export_calls=0
+  local start_calls=0
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  container_exists() {
+    case "$1" in
+      unit-test-container) return 0 ;;
+      renamed-container) return 1 ;;
+      *) return 1 ;;
+    esac
+  }
+  container_running() { return 1; }
+  image_exists() { return 0; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  date() { printf '20260406120000\n'; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_calls=$((create_calls + 1))
+        ;;
+      export)
+        export_calls=$((export_calls + 1))
+        ;;
+      start)
+        start_calls=$((start_calls + 1))
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        ;;
+      exec)
+        fail "dry-run should not exec into the source container when the original workdir is missing"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-python:latest\t/does/not/exist\tro\t2\t4294967296\n'
+  }
+
+  run_capture upgrade_cmd --name unit-test-container --new-name renamed-container --image agent-python --workdir "$TEST_ROOT" --dry-run
+  assert_status 0
+  assert_contains "Warning: Skipping package-loss warning because original /workdir source does not exist and unit-test-container is stopped"
+  assert_contains "Dry run: upgrade plan for unit-test-container -> renamed-container"
+  assert_contains "  Source image: agent-python"
+  assert_contains "  Target image: agent-python"
+  assert_contains "  Source workdir: /does/not/exist"
+  assert_contains "  Target workdir: $TEST_ROOT"
+  assert_contains "  Mount mode: read-only"
+  assert_contains "  CPU: 2 -> 2"
+  assert_contains "  Memory: 4G -> 4G"
+  assert_contains "  Config backup: export existing container filesystem and recover /home/coder/.codex from it"
+  assert_contains "  Backup image: renamed-container-backup-20260406120000"
+  assert_contains "  Actions: remove unit-test-container and recreate it as renamed-container"
+  assert_contains "Dry run complete: no container changes applied"
+  [ "$create_calls" -eq 0 ] || fail "Expected no create calls during dry-run, got: $create_calls"
+  [ "$export_calls" -eq 0 ] || fail "Expected no export calls during dry-run, got: $export_calls"
+  [ "$start_calls" -eq 0 ] || fail "Expected no start calls during dry-run, got: $start_calls"
+  [ "$stop_calls" -eq 0 ] || fail "Expected no stop calls during dry-run, got: $stop_calls"
+  [ "$rm_calls" -eq 0 ] || fail "Expected no rm calls during dry-run, got: $rm_calls"
+}
+
 test_upgrade_warns_about_added_packages_missing_from_target_image() {
   begin_test "upgrade warns only for extra packages absent from the target image"
 
@@ -3261,6 +3343,7 @@ main() {
   test_run_rejects_resource_flags_for_existing_container
   test_upgrade_uses_explicit_resource_overrides
   test_upgrade_can_rename_container_during_recreation
+  test_upgrade_dry_run_reports_plan_without_recreating_container
   test_upgrade_warns_about_added_packages_missing_from_target_image
   test_upgrade_uses_stored_baseline_when_current_image_is_missing
   test_upgrade_accepts_workdir_override_when_original_mount_is_missing

@@ -91,6 +91,12 @@ can rename it during the same upgrade:
 agentctl upgrade --name my-project --new-name my-project-renamed --workdir /new/path/to/project
 ```
 
+To preview the upgrade plan first without recreating anything, add `--dry-run`:
+
+```bash
+agentctl upgrade --name my-project --new-name my-project-renamed --workdir /new/path/to/project --dry-run
+```
+
 Before recreating the container, `upgrade` warns about extra OS packages that
 were added after the container's stored baseline snapshot and are not present
 in the target image, because those packages are not preserved automatically.

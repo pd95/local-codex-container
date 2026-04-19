@@ -178,6 +178,17 @@ def string_value(value):
                 return inner
     return ""
 
+def resource_value(value):
+    if value in (None, "", 0, "0"):
+        return ""
+    if isinstance(value, (int, float)):
+        if int(value) <= 0:
+            return ""
+        return str(int(value))
+    if isinstance(value, str):
+        return value
+    return ""
+
 try:
     data = json.loads(sys.stdin.read())
 except Exception:
@@ -219,12 +230,16 @@ cpus = (
 )
 memory = (
     lookup(config, ("memory",))
+    or lookup(config, ("memoryInBytes",))
     or lookup(config, ("resources", "memory"))
+    or lookup(config, ("resources", "memoryInBytes"))
     or lookup(data, ("memory",))
+    or lookup(data, ("memoryInBytes",))
     or lookup(data, ("resources", "memory"))
+    or lookup(data, ("resources", "memoryInBytes"))
 )
 
-print(f"{image}\t{workdir}\t{mount_mode}\t{cpus}\t{memory}")
+print(f"{image}\t{workdir}\t{mount_mode}\t{resource_value(cpus)}\t{resource_value(memory)}")
 PY
 )"
   python_exec "$script" || echo -e "\t\t\t\t"
@@ -648,6 +663,7 @@ Options:
   --mem SIZE          Memory limit for recreated container (default: preserve existing setting)
   --backup-image NAME Backup image name for container export (default: <new-name-or-name>-backup-<timestamp>)
   --no-backup         Skip container export backup image creation
+  --dry-run           Show the planned upgrade actions without recreating the container
   --overwrite-config  Replace ~/.codex/config.toml and local_models.json from the upgraded image and recreate ~/.codex/AGENTS.md as a symlink
 
 Upgrade recreates the container from the target image. Before recreation, it
@@ -2856,6 +2872,141 @@ warn_upgrade_package_loss() {
   printf '%s' "$lost_packages_json" | jq -r '.[] | "  - " + .' >&2
 }
 
+print_upgrade_dry_run_summary() {
+  local name="$1"
+  local target_name="$2"
+  local current_image="$3"
+  local target_image="$4"
+  local current_workdir="$5"
+  local target_workdir="$6"
+  local mount_mode="$7"
+  local current_cpu="$8"
+  local target_cpu="$9"
+  local current_mem="${10}"
+  local target_mem="${11}"
+  local was_running="${12}"
+  local backup_mode="${13}"
+  local no_backup="${14}"
+  local backup_image="${15}"
+  local overwrite_config="${16}"
+  local state_label=""
+  local mount_label=""
+  local config_label=""
+  local backup_label=""
+  local overwrite_label="no"
+  local source_image_display=""
+  local target_image_display=""
+  local current_mem_display=""
+  local target_mem_display=""
+
+  if [ "$was_running" -eq 1 ]; then
+    state_label="running"
+  else
+    state_label="stopped"
+  fi
+
+  if [ "$mount_mode" = "ro" ]; then
+    mount_label="read-only"
+  else
+    mount_label="read-write"
+  fi
+
+  case "$backup_mode" in
+    export)
+      config_label="export existing container filesystem and recover /home/coder/.codex from it"
+      ;;
+    start)
+      config_label="start the stopped source container, back up /home/coder/.codex, then stop it again"
+      ;;
+    running)
+      config_label="back up /home/coder/.codex from the running source container"
+      ;;
+    *)
+      config_label="back up /home/coder/.codex"
+      ;;
+  esac
+
+  if [ "$no_backup" -eq 1 ]; then
+    backup_label="skipped (--no-backup)"
+  else
+    backup_label="$backup_image"
+  fi
+
+  if [ "$overwrite_config" -eq 1 ]; then
+    overwrite_label="yes"
+  fi
+
+  source_image_display="$(display_upgrade_image_ref "$current_image")"
+  target_image_display="$(display_upgrade_image_ref "$target_image")"
+  current_mem_display="$(display_upgrade_memory_limit "$current_mem")"
+  target_mem_display="$(display_upgrade_memory_limit "$target_mem")"
+
+  echo "Dry run: upgrade plan for $name -> $target_name" >&2
+  echo "  Source image: $source_image_display" >&2
+  echo "  Target image: $target_image_display" >&2
+  echo "  Source workdir: $current_workdir" >&2
+  echo "  Target workdir: $target_workdir" >&2
+  echo "  Mount mode: $mount_label" >&2
+  echo "  CPU: ${current_cpu:-unlimited} -> ${target_cpu:-unlimited}" >&2
+  echo "  Memory: $current_mem_display -> $target_mem_display" >&2
+  echo "  Current state: $state_label" >&2
+  echo "  Config backup: $config_label" >&2
+  echo "  Backup image: $backup_label" >&2
+  echo "  Overwrite config: $overwrite_label" >&2
+  if [ "$name" = "$target_name" ]; then
+    echo "  Actions: remove $name and recreate it in place" >&2
+  else
+    echo "  Actions: remove $name and recreate it as $target_name" >&2
+  fi
+  echo "Dry run complete: no container changes applied" >&2
+}
+
+display_upgrade_image_ref() {
+  local image_ref="$1"
+
+  if [ -z "$image_ref" ]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  if [[ "$image_ref" == *:latest ]]; then
+    printf '%s\n' "${image_ref%:latest}"
+    return 0
+  fi
+  printf '%s\n' "$image_ref"
+}
+
+display_upgrade_memory_limit() {
+  local value="$1"
+  local unit=""
+  local divisor=1
+
+  if [ -z "$value" ] || [ "$value" = "0" ]; then
+    printf 'unlimited\n'
+    return 0
+  fi
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  if [ $((value % 1073741824)) -eq 0 ]; then
+    unit="G"
+    divisor=1073741824
+  elif [ $((value % 1048576)) -eq 0 ]; then
+    unit="M"
+    divisor=1048576
+  elif [ $((value % 1024)) -eq 0 ]; then
+    unit="K"
+    divisor=1024
+  fi
+
+  if [ -n "$unit" ]; then
+    printf '%s%s\n' "$((value / divisor))" "$unit"
+    return 0
+  fi
+  printf '%s\n' "$value"
+}
+
 run_container() {
   local name="$1"
   local image="$2"
@@ -3611,6 +3762,7 @@ upgrade_cmd() {
   local mem=""
   local backup_image=""
   local no_backup=0
+  local dry_run=0
   local overwrite_config=0
   local current_image=""
   local current_workdir=""
@@ -3622,6 +3774,7 @@ upgrade_cmd() {
   local was_running=0
   local started_for_backup=0
   local used_export_for_config_backup=0
+  local backup_mode=""
   local inspect_info=""
 
   while [ $# -gt 0 ]; do
@@ -3634,6 +3787,7 @@ upgrade_cmd() {
       --mem) mem="$2"; shift 2 ;;
       --backup-image) backup_image="$2"; shift 2 ;;
       --no-backup) no_backup=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
       --overwrite-config) overwrite_config=1; shift ;;
       --help) usage_upgrade; return 0 ;;
       *) die "Unknown option for upgrade: $1" ;;
@@ -3695,11 +3849,24 @@ upgrade_cmd() {
   fi
   if [ "$was_running" -eq 0 ] && [ -n "$workdir_override" ] && [ ! -e "$current_workdir" ]; then
     warn "Skipping package-loss warning because original /workdir source does not exist and $name is stopped"
+    backup_mode="export"
   else
     warn_upgrade_package_loss "$name" "$current_image" "$image"
+    if [ "$was_running" -eq 0 ]; then
+      backup_mode="start"
+    else
+      backup_mode="running"
+    fi
   fi
   if [ "$no_backup" -eq 0 ] && [ -z "$backup_image" ]; then
     backup_image="$(sanitize_image_name "${target_name}-backup-$(date -u +%Y%m%d%H%M%S)")"
+  fi
+  if [ "$dry_run" -eq 1 ]; then
+    print_upgrade_dry_run_summary \
+      "$name" "$target_name" "$current_image" "$image" "$current_workdir" "$workdir" \
+      "$mount_mode" "$current_cpu" "$cpu" "$current_mem" "$mem" "$was_running" \
+      "$backup_mode" "$no_backup" "$backup_image" "$overwrite_config"
+    return 0
   fi
 
   local backup_dir
