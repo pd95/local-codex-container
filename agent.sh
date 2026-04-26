@@ -44,7 +44,7 @@ has_explicit_runtime_model() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      -m|--model|--model=*) return 0 ;;
+      -m|-m=*|--model|--model=*) return 0 ;;
     esac
   done
   return 1
@@ -381,6 +381,64 @@ runtime_config_enabled() {
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+ollama_detect_gateway() {
+  local route_file="${AGENTCTL_OLLAMA_ROUTE_FILE:-/proc/net/route}"
+
+  awk '
+    function hex2dec(hex,   i, c, n, v) {
+      n = 0
+      hex = toupper(hex)
+      for (i = 1; i <= length(hex); i++) {
+        c = substr(hex, i, 1)
+        v = index("0123456789ABCDEF", c) - 1
+        if (v < 0) {
+          exit 1
+        }
+        n = (n * 16) + v
+      }
+      return n
+    }
+    $2 == "00000000" && length($3) == 8 {
+      printf "%s.%s.%s.%s\n",
+        hex2dec(substr($3, 7, 2)),
+        hex2dec(substr($3, 5, 2)),
+        hex2dec(substr($3, 3, 2)),
+        hex2dec(substr($3, 1, 2))
+      exit
+    }
+  ' "$route_file" 2>/dev/null || true
+}
+
+ollama_resolve_base_url() {
+  local gateway=""
+  local api_url=""
+  local ollama_port="11434"
+
+  command -v curl >/dev/null 2>&1 || die "Missing curl required for local Ollama connectivity checks"
+  gateway="$(ollama_detect_gateway)"
+  [ -n "$gateway" ] || die "Unable to determine the container host gateway for local Ollama"
+  api_url="http://${gateway}:${ollama_port}/api/version"
+  if curl -fsS --max-time 3 "$api_url" >/dev/null 2>&1; then
+    printf 'http://%s:%s\n' "$gateway" "$ollama_port"
+    return 0
+  fi
+
+  die "Local Ollama is not reachable from the container.
+
+Tried:
+- Detected host gateway: $api_url
+
+Expose or proxy Ollama onto the container network.
+See README.md 'Local model connectivity'.
+
+Host-side fixes:
+- Start a second Ollama listener:
+  OLLAMA_HOST=${gateway} ollama serve
+
+- Proxy localhost with socat (needs \`brew install socat\`):
+  socat TCP-LISTEN:${ollama_port},fork,bind=${gateway} TCP:127.0.0.1:${ollama_port}"
 }
 
 json_runtime_info() {
