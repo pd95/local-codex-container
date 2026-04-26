@@ -523,6 +523,7 @@ agent_runtime_reset_config() {
   [ "$runtime" = "codex" ] || die "unsupported runtime adapter: $runtime"
   codex_dir="$(codex_home_dir)"
   codex_ensure_home_dir
+  printf 'Warning: resetting Codex configuration will replace ~/.codex/config.toml, ~/.codex/local_models.json, ~/.codex/AGENTS.md, and may remove custom profiles, MCP servers, providers, local model metadata, and runtime preference.\n' >&2
   cp "$config_dir/config.toml" "$codex_dir/config.toml"
   if [ -f "$config_dir/local_models.json" ]; then
     cp "$config_dir/local_models.json" "$codex_dir/local_models.json"

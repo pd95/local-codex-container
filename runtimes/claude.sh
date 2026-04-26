@@ -174,6 +174,7 @@ agent_runtime_reset_config() {
 
   [ "$runtime" = "claude" ] || die "unsupported runtime adapter: $runtime"
   mkdir -p "$CLAUDE_HOME_DIR"
+  printf 'Warning: resetting Claude configuration will replace ~/.claude/settings.json and may remove MCP servers, permissions, hooks, env settings, and runtime preference.\n' >&2
   if [ -n "$config_dir" ] && [ -f "$config_dir/settings.json" ]; then
     cp "$config_dir/settings.json" "$CLAUDE_SETTINGS_FILE"
   else
