@@ -1444,7 +1444,6 @@ test_agent_sh_claude_runtime_reset_config_restores_settings() {
   expected_owner="$(id -u):$(id -g)"
   mkdir -p "$fake_bin"
   mkdir -p "$temp_home/home/.claude"
-  printf '%s' '{"env":{"USE_BUILTIN_RIPGREP":"1"}}' >"$temp_home/home/.claude/settings.json"
   printf '%s' '{"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
 
   cat >"$fake_bin/id" <<'EOF'
@@ -1464,12 +1463,27 @@ exit 0
 EOF
   chmod +x "$fake_bin/chown"
 
+  cat >"$temp_home/home/.claude/settings.json" <<'EOF'
+{
+  "env": {
+    "USE_BUILTIN_RIPGREP": "1"
+  },
+  "mcpServers": {
+    "custom": {
+      "command": "custom-mcp"
+    }
+  }
+}
+EOF
+
   run_agent_sh_capture_env "$temp_home" \
     PATH="$fake_bin:/usr/bin:/bin" \
     -- runtime reset-config claude
   assert_status 0
   assert_contains "Warning: resetting Claude configuration will replace ~/.claude/settings.json"
   assert_contains "MCP servers"
+  assert_contains "Existing Claude MCP configuration that reset-config will replace:"
+  assert_contains '"command": "custom-mcp"'
   grep -Fq "chown -R $expected_owner $temp_home/home/.claude" "$install_log" || fail "Expected reset-config to hand .claude ownership back to the container user"
   grep -Fq "chown $expected_owner $temp_home/home/.claude.json" "$install_log" || fail "Expected reset-config to hand .claude.json ownership back to the container user"
   jq -er '.env.USE_BUILTIN_RIPGREP == "0"' "$temp_home/home/.claude/settings.json" >/dev/null || fail "Expected Claude settings reset to default ripgrep behavior"
@@ -1519,6 +1533,9 @@ EOF
   assert_status 0
   assert_contains "Warning: resetting Codex configuration will replace ~/.codex/config.toml"
   assert_contains "custom profiles, MCP servers, providers, local model metadata, and runtime preference"
+  assert_contains "Existing Codex MCP configuration that reset-config will replace:"
+  assert_contains "[mcp_servers.custom]"
+  assert_contains 'command = "custom-mcp"'
   grep -Fq 'model = "gpt-oss:20b"' "$temp_home/home/.codex/config.toml" || fail "Expected Codex config.toml to reset to image defaults"
   jq -er '.models == []' "$temp_home/home/.codex/local_models.json" >/dev/null || fail "Expected Codex local_models.json to reset to image defaults"
   [ -L "$temp_home/home/.codex/AGENTS.md" ] || fail "Expected Codex AGENTS.md to reset to a symlink"
