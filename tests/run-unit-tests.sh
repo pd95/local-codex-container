@@ -1910,6 +1910,9 @@ EOF
       "slug": "gpt-oss:20b",
       "display_name": "old name",
       "context_window": 1,
+      "reasoning_summary_format": "none",
+      "default_reasoning_summary": "auto",
+      "default_reasoning_level": "medium",
       "custom": "keep"
     }
   ]

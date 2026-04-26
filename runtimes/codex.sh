@@ -378,8 +378,14 @@ codex_upsert_model_catalog() {
     | if $old == null then
         ""
       else
-        [ $new | keys_unsorted[]
-          | select(($old[.] // null) != ($new[.] // null))
+        [ ([ $new | keys_unsorted[] ] + [
+            "reasoning_summary_format",
+            "default_reasoning_summary",
+            "default_reasoning_level"
+          ])[]
+          | . as $key
+          | select(($old | has($key)) or ($new | has($key)))
+          | select(($old[$key] // null) != ($new[$key] // null))
         ] | join(",")
       end
   ' "$catalog_tmp")"
@@ -389,7 +395,13 @@ codex_upsert_model_catalog() {
     ($entry[0]) as $new
     | (.models | any(.slug == $new.slug)) as $exists
     | .models = (
-        (.models | map(if .slug == $new.slug then . + $new else . end))
+        (.models | map(
+          if .slug == $new.slug then
+            del(.reasoning_summary_format, .default_reasoning_summary, .default_reasoning_level) + $new
+          else
+            .
+          end
+        ))
         + (if $exists then [] else [$new] end)
       )
   ' "$catalog_tmp" >"$updated_file"
