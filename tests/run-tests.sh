@@ -281,13 +281,7 @@ echo home-state-restored
   assert_status 0
   assert_contains "home-state-restored"
 
-  run_capture "$CONTAINER_CMD" create -t --name "$rescue" "$backup_image" sh -c 'sleep infinity'
-  assert_status 0
-
-  run_capture "$CONTAINER_CMD" start "$rescue"
-  assert_status 0
-
-  run_capture "$CONTAINER_CMD" exec "$rescue" sh -lc '
+  run_capture "$AGENTCTL" rescue --image "$backup_image" --name "$rescue" --cmd sh -lc '
 set -e
 grep -q dummy-codex-token /home/coder/.codex/auth.json
 test "$(cat /home/coder/.config/agentctl/preferred-runtime)" = codex

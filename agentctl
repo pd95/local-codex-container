@@ -615,6 +615,7 @@ Commands:
   refresh    Refresh agentctl-managed files in an existing container
   system-manifest  Print a container package manifest
   upgrade    Recreate a container from the latest image while preserving config
+  rescue     Temporarily run a shell or command in a backup image
   auth       Run OpenAI device auth flow and store in Keychain
   exec       Exec into a running container (default: bash)
   su-exec    Exec into a running container as root (default: bash)
@@ -773,6 +774,25 @@ snapshot when those packages are not present in the target image.
 
 With --copy, upgrade preserves the source container and creates a second
 container with the requested name and settings instead of replacing it.
+EOF
+}
+
+usage_rescue() {
+  cat <<EOF
+Usage: $CLI_NAME rescue --image IMAGE [options]
+       $CLI_NAME rescue IMAGE [options]
+
+Options:
+  --image IMAGE  Backup image to run
+  --name NAME    Temporary container name (default: agent-rescue-<image>-<timestamp>)
+  --keep         Leave the rescue container running instead of removing it after exit
+  --cpu NUM      CPU cores for the rescue container
+  --mem SIZE     Memory limit for the rescue container
+  --cmd ...      Run a custom command instead of an interactive /bin/sh shell
+
+Rescue runs a backup image directly without refresh, auth sync, runtime install,
+or /workdir mounting. It is intended for recovering files or configuration from
+an upgrade backup image.
 EOF
 }
 
@@ -4288,6 +4308,121 @@ upgrade_cmd() {
   fi
 }
 
+rescue_cmd() {
+  local image=""
+  local name=""
+  local keep=0
+  local cpu=""
+  local mem=""
+  local created=0
+  local started=0
+  local exit_code=0
+  local -a cmd=()
+  local cmd_override_set=0
+  local -a create_cmd=()
+
+  cleanup_rescue_container() {
+    if [ "$keep" -eq 1 ]; then
+      return 0
+    fi
+    if [ "$started" -eq 1 ]; then
+      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 || true
+      started=0
+    fi
+    if [ "$created" -eq 1 ]; then
+      "$CONTAINER_CMD" rm "$name" >/dev/null 2>&1 || true
+      created=0
+    fi
+  }
+
+  cleanup_rescue_container_on_signal() {
+    cleanup_rescue_container
+    trap - EXIT INT TERM HUP
+    exit 130
+  }
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      --keep) keep=1; shift ;;
+      --cpu) cpu="$2"; shift 2 ;;
+      --mem) mem="$2"; shift 2 ;;
+      --cmd) shift; cmd_override_set=1; cmd=("$@"); break ;;
+      --help) usage_rescue; return 0 ;;
+      --*) die "Unknown option for rescue: $1" ;;
+      *)
+        if [ -z "$image" ]; then
+          image="$1"
+          shift
+        else
+          die "Unknown option for rescue: $1"
+        fi
+        ;;
+    esac
+  done
+
+  require_container
+  [ -n "$image" ] || die "--image is required for rescue"
+  if [ "$cmd_override_set" -eq 1 ] && [ "${#cmd[@]}" -eq 0 ]; then
+    die "Missing command after --cmd"
+  fi
+  if [ "${#cmd[@]}" -eq 0 ]; then
+    cmd=("/bin/sh")
+  fi
+  if [ "${#cmd[@]}" -eq 1 ]; then
+    case "${cmd[0]}" in
+      *[[:space:]]*) cmd=("/bin/sh" "-lc" "${cmd[0]}") ;;
+    esac
+  fi
+  if ! image_exists "$image"; then
+    die "Image not found: $image"
+  fi
+  if [ -z "$name" ]; then
+    name="$(sanitize_container_name "agent-rescue-${image%%:*}-$(date -u +%Y%m%d%H%M%S)")"
+  fi
+  if container_exists "$name"; then
+    die "Container already exists: $name"
+  fi
+
+  trap cleanup_rescue_container EXIT
+  trap cleanup_rescue_container_on_signal INT TERM HUP
+
+  create_cmd=("$CONTAINER_CMD" create -t)
+  if [ -n "$cpu" ]; then
+    create_cmd+=(-c "$cpu")
+  fi
+  if [ -n "$mem" ]; then
+    create_cmd+=(-m "$mem")
+  fi
+  create_cmd+=(--name "$name" "$image" /bin/sh -c 'sleep infinity')
+
+  echo "Creating rescue container: $name" >&2
+  "${create_cmd[@]}" >/dev/null
+  created=1
+
+  echo "Starting rescue container: $name" >&2
+  "$CONTAINER_CMD" start "$name" >/dev/null
+  started=1
+
+  if [ "$cmd_override_set" -eq 1 ]; then
+    "$CONTAINER_CMD" exec "$name" "${cmd[@]}" || exit_code=$?
+  else
+    "$CONTAINER_CMD" exec -it "$name" "${cmd[@]}" || exit_code=$?
+  fi
+
+  if [ "$keep" -eq 1 ]; then
+    trap - EXIT INT TERM HUP
+    echo "Rescue container kept: $name" >&2
+    return "$exit_code"
+  fi
+
+  echo "Removing rescue container: $name" >&2
+  cleanup_rescue_container
+  trap - EXIT INT TERM HUP
+  return "$exit_code"
+}
+
 exec_cmd() {
   local name=""
   local cmd=()
@@ -4421,6 +4556,7 @@ case "$cmd" in
   refresh) shift; refresh_cmd "$@" ;;
   system-manifest) shift; system_manifest_cmd "$@" ;;
   upgrade) shift; upgrade_cmd "$@" ;;
+  rescue) shift; rescue_cmd "$@" ;;
   auth) shift; auth_cmd "$@" ;;
   exec) shift; exec_cmd "$@" ;;
   su-exec) shift; su_exec_cmd "$@" ;;

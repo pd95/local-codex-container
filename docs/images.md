@@ -182,6 +182,29 @@ contract, `upgrade --no-backup` is rejected.
 In that case, keep the backup image enabled so the original container
 filesystem can be recovered if needed.
 
+## Backup Image Rescue
+
+Use `rescue` to temporarily inspect an upgrade backup image without refreshing
+it or mounting the current workdir:
+
+```bash
+agentctl rescue --image agent-my-project-backup-20260516113757
+```
+
+By default, `rescue` creates a temporary container, opens `/bin/sh` as root, and
+removes the container when the shell exits. Use `--cmd` for a single command:
+
+```bash
+agentctl rescue --image agent-my-project-backup-20260516113757 --cmd sh -lc 'cat /etc/agentctl/smoke-marker'
+```
+
+Use `--keep --name NAME` when you want to leave the rescue container running for
+multiple inspection commands:
+
+```bash
+agentctl rescue --image agent-my-project-backup-20260516113757 --name recover-my-project --keep
+```
+
 ## Snapshots, Rebuilds, and Cache
 
 Snapshot and rebuild options:

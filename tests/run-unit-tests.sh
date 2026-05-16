@@ -132,6 +132,17 @@ test_run_help_reports_runtime_options() {
   assert_contains "--online        Use the runtime's online/provider-backed mode"
 }
 
+test_rescue_help_reports_backup_image_options() {
+  begin_test "rescue help reports backup image options"
+
+  run_capture "$AGENTCTL" rescue --help
+  assert_status 0
+  assert_contains "Usage: agentctl rescue --image IMAGE"
+  assert_contains "--keep"
+  assert_contains "--cmd ..."
+  assert_contains "backup image"
+}
+
 test_run_model_wires_selected_model() {
   begin_test "run_cmd wires --model into the launched agent.sh command"
 
@@ -3729,6 +3740,91 @@ test_rm_force_stops_running_container_before_remove() {
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 rm call, got: $rm_calls"
 }
 
+test_rescue_runs_command_in_temporary_backup_container() {
+  begin_test "rescue runs a command in a temporary backup container"
+
+  load_codexctl_functions
+
+  local create_log=""
+  local exec_log=""
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  image_exists() { [ "$1" = "agent-project-backup-20260516113757" ]; }
+  container_exists() { return 1; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      create)
+        create_log="$(printf '%s\n' "$*")"
+        ;;
+      start)
+        [ "$2" = "unit-rescue" ] || fail "Unexpected rescue start target: $*"
+        ;;
+      exec)
+        exec_log="$(printf '%s\n' "$*")"
+        ;;
+      stop)
+        stop_calls=$((stop_calls + 1))
+        [ "$2" = "unit-rescue" ] || fail "Unexpected rescue stop target: $*"
+        ;;
+      rm)
+        rm_calls=$((rm_calls + 1))
+        [ "$2" = "unit-rescue" ] || fail "Unexpected rescue rm target: $*"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture rescue_cmd --image agent-project-backup-20260516113757 --name unit-rescue --cmd /bin/sh -lc 'cat /etc/agentctl/smoke-marker'
+  assert_status 0
+  printf '%s\n' "$create_log" | grep -Fq -- "--name unit-rescue" || fail "Expected named rescue container create, got: $create_log"
+  printf '%s\n' "$create_log" | grep -Fq -- "agent-project-backup-20260516113757" || fail "Expected backup image in create call, got: $create_log"
+  printf '%s\n' "$create_log" | grep -Fq -- "/bin/sh" || fail "Expected sleep wrapper shell in create call, got: $create_log"
+  printf '%s\n' "$exec_log" | grep -Fq -- "exec" || fail "Expected rescue exec call, got: $exec_log"
+  if printf '%s\n' "$exec_log" | grep -Fq -- "-it"; then
+    fail "Did not expect non-interactive rescue command to force -it: $exec_log"
+  fi
+  printf '%s\n' "$exec_log" | grep -Fq -- "cat /etc/agentctl/smoke-marker" || fail "Expected command in rescue exec, got: $exec_log"
+  [ "$stop_calls" -eq 1 ] || fail "Expected temporary rescue stop, got $stop_calls"
+  [ "$rm_calls" -eq 1 ] || fail "Expected temporary rescue rm, got $rm_calls"
+  assert_contains "Creating rescue container: unit-rescue"
+  assert_contains "Removing rescue container: unit-rescue"
+}
+
+test_rescue_keep_leaves_container_running() {
+  begin_test "rescue --keep leaves the rescue container running"
+
+  load_codexctl_functions
+
+  local stop_calls=0
+  local rm_calls=0
+
+  require_container() { return 0; }
+  image_exists() { [ "$1" = "agent-project-backup-20260516113757" ]; }
+  container_exists() { return 1; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      create|start|exec) ;;
+      stop) stop_calls=$((stop_calls + 1)) ;;
+      rm) rm_calls=$((rm_calls + 1)) ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture rescue_cmd agent-project-backup-20260516113757 --name unit-rescue --keep --cmd true
+  assert_status 0
+  [ "$stop_calls" -eq 0 ] || fail "Did not expect kept rescue container to stop, got $stop_calls"
+  [ "$rm_calls" -eq 0 ] || fail "Did not expect kept rescue container to be removed, got $rm_calls"
+  assert_contains "Rescue container kept: unit-rescue"
+}
+
 test_image_ref_for_runtime_falls_back_to_legacy_when_present() {
   begin_test "image_ref_for_runtime prefers canonical names but falls back to legacy refs"
 
@@ -5509,6 +5605,7 @@ main() {
   test_run_config_wires_runtime_config_json
   test_run_help_reports_generic_runtime_config
   test_run_help_reports_runtime_options
+  test_rescue_help_reports_backup_image_options
   test_run_model_wires_selected_model
   test_build_help_reports_primary_base_images
   test_build_cmd_passes_runtime_list_build_args
@@ -5612,6 +5709,8 @@ main() {
   test_run_keychain_for_runtime_uses_runtime_specific_codex_slot
   test_run_keychain_for_runtime_uses_runtime_specific_slot
   test_rm_force_stops_running_container_before_remove
+  test_rescue_runs_command_in_temporary_backup_container
+  test_rescue_keep_leaves_container_running
   test_image_ref_for_runtime_falls_back_to_legacy_when_present
   test_ls_filters_non_codex_containers
   test_upgrade_backup_support_check
