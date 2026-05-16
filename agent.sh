@@ -601,6 +601,7 @@ state_runtime_paths() {
   if declare -F agent_runtime_state_paths >/dev/null 2>&1; then
     agent_runtime_state_paths "$runtime"
   fi
+  return 0
 }
 
 state_legacy_paths() {
@@ -611,11 +612,36 @@ state_legacy_paths() {
   [ -e "$codex_home_dir" ] && printf '%s\n' ".codex"
   [ -e "$claude_home_dir" ] && printf '%s\n' ".claude"
   [ -e "$claude_home_state_file" ] && printf '%s\n' ".claude.json"
+  return 0
+}
+
+state_shell_paths() {
+  local path=""
+
+  for path in \
+    .profile \
+    .bashrc \
+    .bash_profile \
+    .bash_login \
+    .bash_logout \
+    .bash_history \
+    .zshrc \
+    .zprofile \
+    .zlogin \
+    .zlogout \
+    .zshenv \
+    .zsh_history \
+    .ash_history \
+    .sh_history; do
+    [ -e "$HOME/$path" ] && printf '%s\n' "$path"
+  done
+  return 0
 }
 
 state_export_paths() {
   local installed_runtimes=""
 
+  state_shell_paths
   [ -e "$USER_CONFIG_DIR" ] && printf '%s\n' ".config/agentctl"
   installed_runtimes="$(runtime_ids_installed)"
   if [ -n "$installed_runtimes" ]; then

@@ -2903,6 +2903,9 @@ test_agent_sh_state_export_includes_known_user_state() {
   printf '%s' 'claude' >"$temp_home/home/.config/agentctl/preferred-runtime"
   printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$temp_home/home/.claude/.credentials.json"
   printf '%s' '{"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
+  printf '%s' 'export PATH="$HOME/go/bin:$PATH"' >"$temp_home/home/.profile"
+  printf '%s' 'alias ll="ls -la"' >"$temp_home/home/.bashrc"
+  printf '%s' 'apk add --no-cache go' >"$temp_home/home/.bash_history"
 
   env -i \
     "HOME=$temp_home/home" \
@@ -2918,6 +2921,9 @@ test_agent_sh_state_export_includes_known_user_state() {
   tar -tf "$tar_file" | grep -Fx '.config/agentctl/preferred-runtime' >/dev/null || fail "Expected preferred runtime in exported state"
   tar -tf "$tar_file" | grep -Fx '.claude/.credentials.json' >/dev/null || fail "Expected Claude credentials in exported state"
   tar -tf "$tar_file" | grep -Fx '.claude.json' >/dev/null || fail "Expected Claude home state in exported state"
+  tar -tf "$tar_file" | grep -Fx '.profile' >/dev/null || fail "Expected .profile in exported state"
+  tar -tf "$tar_file" | grep -Fx '.bashrc' >/dev/null || fail "Expected .bashrc in exported state"
+  tar -tf "$tar_file" | grep -Fx '.bash_history' >/dev/null || fail "Expected .bash_history in exported state"
 }
 
 test_agent_sh_state_export_uses_installed_runtime_hooks() {
@@ -2939,6 +2945,7 @@ test_agent_sh_state_export_uses_installed_runtime_hooks() {
   printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$temp_home/home/.claude/.credentials.json"
   printf '%s' '{"hasCompletedOnboarding":true}' >"$temp_home/home/.claude.json"
   printf '%s' 'codex' >"$temp_home/home/.config/agentctl/preferred-runtime"
+  printf '%s' 'export PATH="$HOME/go/bin:$PATH"' >"$temp_home/home/.profile"
 
   env -i \
     "HOME=$temp_home/home" \
@@ -2952,6 +2959,7 @@ test_agent_sh_state_export_uses_installed_runtime_hooks() {
 
   tar -tf "$tar_file" | grep -Fx '.codex/auth.json' >/dev/null || fail "Expected installed Codex runtime state in exported state"
   tar -tf "$tar_file" | grep -Fx '.config/agentctl/preferred-runtime' >/dev/null || fail "Expected generic agentctl state in exported state"
+  tar -tf "$tar_file" | grep -Fx '.profile' >/dev/null || fail "Expected shell state in exported state"
   if tar -tf "$tar_file" | grep -Fqx '.claude/.credentials.json'; then
     fail "Did not expect Claude legacy state to be exported when only Codex is installed"
   fi
@@ -2980,6 +2988,9 @@ test_agent_sh_state_import_restores_known_user_state() {
   printf '%s' 'claude' >"$source_home/home/.config/agentctl/preferred-runtime"
   printf '%s' '{"claudeAiOauth":{"accessToken":"a","refreshToken":"b","expiresAt":1}}' >"$source_home/home/.claude/.credentials.json"
   printf '%s' '{"hasCompletedOnboarding":true}' >"$source_home/home/.claude.json"
+  printf '%s' 'export PATH="$HOME/go/bin:$PATH"' >"$source_home/home/.profile"
+  printf '%s' 'alias ll="ls -la"' >"$source_home/home/.bashrc"
+  printf '%s' 'apk add --no-cache go' >"$source_home/home/.bash_history"
 
   env -i \
     "HOME=$source_home/home" \
@@ -3005,6 +3016,9 @@ test_agent_sh_state_import_restores_known_user_state() {
   [ "$(cat "$target_home/home/.config/agentctl/preferred-runtime")" = "claude" ] || fail "Expected preferred runtime to be restored"
   jq -er '.claudeAiOauth.refreshToken == "b"' "$target_home/home/.claude/.credentials.json" >/dev/null || fail "Expected Claude credentials to be restored"
   jq -er '.hasCompletedOnboarding == true' "$target_home/home/.claude.json" >/dev/null || fail "Expected Claude home state to be restored"
+  grep -Fq 'go/bin' "$target_home/home/.profile" || fail "Expected .profile to be restored"
+  grep -Fq 'alias ll=' "$target_home/home/.bashrc" || fail "Expected .bashrc to be restored"
+  grep -Fq 'apk add --no-cache go' "$target_home/home/.bash_history" || fail "Expected .bash_history to be restored"
 }
 
 test_agent_sh_state_import_uses_installed_runtime_hooks() {
@@ -3026,6 +3040,7 @@ test_agent_sh_state_import_uses_installed_runtime_hooks() {
     "$source_home/home/.config/agentctl"
   printf '%s' 'codex-auth' >"$source_home/home/.codex/auth.json"
   printf '%s' 'codex' >"$source_home/home/.config/agentctl/preferred-runtime"
+  printf '%s' 'export PATH="$HOME/go/bin:$PATH"' >"$source_home/home/.profile"
 
   env -i \
     "HOME=$source_home/home" \
@@ -3053,6 +3068,7 @@ test_agent_sh_state_import_uses_installed_runtime_hooks() {
 
   [ "$(cat "$target_home/home/.codex/auth.json")" = "codex-auth" ] || fail "Expected installed Codex runtime state to be restored"
   [ "$(cat "$target_home/home/.config/agentctl/preferred-runtime")" = "codex" ] || fail "Expected generic agentctl state to be restored"
+  grep -Fq 'go/bin' "$target_home/home/.profile" || fail "Expected shell state to be restored"
   jq -er '.claudeAiOauth.refreshToken == "keep"' "$target_home/home/.claude/.credentials.json" >/dev/null || fail "Expected unrelated Claude legacy state to remain untouched when Claude is not installed"
 }
 
