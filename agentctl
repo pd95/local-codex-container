@@ -3072,6 +3072,14 @@ manifest_packages_json() {
   printf '%s' "$manifest" | jq -c '.packages // []' 2>/dev/null || printf '[]\n'
 }
 
+manifest_requested_packages_json() {
+  local manifest="${1:-}"
+
+  [ -n "$manifest" ] || manifest='{}'
+
+  printf '%s' "$manifest" | jq -c '.requested_packages // []' 2>/dev/null || printf '[]\n'
+}
+
 manifest_installed_runtimes_json() {
   local manifest="${1:-}"
 
@@ -3455,6 +3463,7 @@ warn_upgrade_package_loss() {
   local current_manifest="${4:-}"
   local source_manifest="${5:-}"
   local target_manifest="${6:-}"
+  local target_name="${7:-$name}"
   local stored_manifest=""
   local current_package_manager=""
   local source_package_manager=""
@@ -3462,8 +3471,19 @@ warn_upgrade_package_loss() {
   local current_packages_json='[]'
   local source_packages_json='[]'
   local target_packages_json='[]'
+  local current_requested_packages_json='[]'
+  local source_requested_packages_json='[]'
+  local target_requested_packages_json='[]'
   local added_packages_json='[]'
   local lost_packages_json='[]'
+  local added_requested_packages_json='[]'
+  local reinstall_packages_json='[]'
+  local reinstall_package_count=0
+  local reinstall_package_manager=""
+  local reinstall_command=""
+  local reinstall_label="To reinstall after upgrade:"
+  local requested_package_count=0
+  local requested_package_data_available=0
   local lost_count=""
 
   if [ -z "$current_manifest" ] && ! current_manifest="$(container_system_manifest_json "$name")"; then
@@ -3472,6 +3492,11 @@ warn_upgrade_package_loss() {
   fi
   current_package_manager="$(manifest_package_manager "$current_manifest")"
   current_packages_json="$(manifest_packages_json "$current_manifest")"
+  current_requested_packages_json="$(manifest_requested_packages_json "$current_manifest")"
+  requested_package_count="$(printf '%s' "$current_requested_packages_json" | jq -r 'length' 2>/dev/null || printf '0\n')"
+  if [ "$requested_package_count" -gt 0 ]; then
+    requested_package_data_available=1
+  fi
   if [ "$current_package_manager" = "unknown" ]; then
     warn "Unable to determine the package manager in $name before upgrade"
     return 0
@@ -3483,6 +3508,7 @@ warn_upgrade_package_loss() {
   fi
   target_package_manager="$(manifest_package_manager "$target_manifest")"
   target_packages_json="$(manifest_packages_json "$target_manifest")"
+  target_requested_packages_json="$(manifest_requested_packages_json "$target_manifest")"
 
   if [ -z "$source_manifest" ]; then
     if stored_manifest="$(container_baseline_manifest_json "$name")"; then
@@ -3493,28 +3519,35 @@ warn_upgrade_package_loss() {
       if ! source_manifest="$(image_system_manifest_json "$current_image" source)"; then
         warn "Unable to inspect OS packages in current image $current_image; package warning may include image-provided packages"
         added_packages_json="$current_packages_json"
+        added_requested_packages_json="$current_requested_packages_json"
       fi
     else
       warn "Current image $current_image is not available locally; package warning may include image-provided packages"
       added_packages_json="$current_packages_json"
+      added_requested_packages_json="$current_requested_packages_json"
     fi
   fi
 
   if [ -n "$source_manifest" ]; then
     source_package_manager="$(manifest_package_manager "$source_manifest")"
     source_packages_json="$(manifest_packages_json "$source_manifest")"
+    source_requested_packages_json="$(manifest_requested_packages_json "$source_manifest")"
     if [ "$source_package_manager" = "$current_package_manager" ]; then
       added_packages_json="$(json_string_array_difference "$current_packages_json" "$source_packages_json")"
+      added_requested_packages_json="$(json_string_array_difference "$current_requested_packages_json" "$source_requested_packages_json")"
     else
       warn "Current container package manager differs from its image baseline; package warning may include image-provided packages"
       added_packages_json="$current_packages_json"
+      added_requested_packages_json="$current_requested_packages_json"
     fi
   fi
 
   if [ "$current_package_manager" = "$target_package_manager" ]; then
     lost_packages_json="$(json_string_array_difference "$added_packages_json" "$target_packages_json")"
+    reinstall_packages_json="$(json_string_array_difference "$added_requested_packages_json" "$target_requested_packages_json")"
   else
     lost_packages_json="$added_packages_json"
+    reinstall_packages_json="$added_requested_packages_json"
   fi
 
   lost_count="$(printf '%s' "$lost_packages_json" | jq -r 'length' 2>/dev/null || printf '0\n')"
@@ -3526,6 +3559,41 @@ warn_upgrade_package_loss() {
     warn "Upgrade changes package manager from $current_package_manager to $target_package_manager; reinstall these extra $current_package_manager packages manually if still needed:"
   fi
   printf '%s' "$lost_packages_json" | jq -r '.[] | "  - " + .' >&2
+  reinstall_package_count="$(printf '%s' "$reinstall_packages_json" | jq -r 'length' 2>/dev/null || printf '0\n')"
+  if [ "$reinstall_package_count" -eq 0 ] && [ "$requested_package_data_available" -eq 0 ]; then
+    reinstall_packages_json="$lost_packages_json"
+    reinstall_package_count="$lost_count"
+  fi
+  if [ "$current_package_manager" = "$target_package_manager" ] && [ "$reinstall_package_count" -gt 0 ]; then
+    case "$target_package_manager" in
+      apk)
+        reinstall_package_manager="apk"
+        reinstall_command="apk add --no-cache"
+        ;;
+      dpkg)
+        reinstall_package_manager="apt-get"
+        reinstall_command="apt-get install -y"
+        ;;
+      *)
+        reinstall_package_manager=""
+        reinstall_command=""
+        ;;
+    esac
+    if [ -n "$reinstall_command" ]; then
+      if [ "$requested_package_data_available" -eq 1 ]; then
+        reinstall_label="To reinstall top-level packages after upgrade:"
+      fi
+      printf '%s\n' "$reinstall_label" >&2
+      if [ "$reinstall_package_manager" = "apt-get" ]; then
+        printf '  %s su-exec --name %s apt-get update\n' "$CLI_NAME" "$target_name" >&2
+      fi
+      printf '  %s su-exec --name %s %s %s\n' \
+        "$CLI_NAME" \
+        "$target_name" \
+        "$reinstall_command" \
+        "$(printf '%s' "$reinstall_packages_json" | jq -r 'join(" ")')" >&2
+    fi
+  fi
 }
 
 print_upgrade_dry_run_summary() {
@@ -4150,7 +4218,7 @@ upgrade_cmd() {
       fi
     fi
     warn_upgrade_package_loss "$name" "$current_image" "$image" \
-      "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest"
+      "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest" "$target_name"
     added_runtimes_json="$(upgrade_added_runtimes_json "$name" "$current_image" "$image" \
       "$preflight_current_manifest" "$preflight_source_manifest" "$preflight_target_manifest" 2>/dev/null || printf '[]\n')"
     added_features_json="$(upgrade_added_features_json "$name" "$current_image" "$image" \

@@ -1340,6 +1340,64 @@ test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state() {
   printf '%s' "$RUN_OUTPUT" | jq -er '.installed_runtimes == ["claude","codex"] and .installed_features == ["office"] and .default_runtime == "codex" and .preferred_runtime == "claude"' >/dev/null || fail "Expected richer system manifest JSON, got: $RUN_OUTPUT"
 }
 
+test_agent_sh_system_manifest_reports_apk_requested_packages() {
+  begin_test "agent.sh system manifest reports apk requested packages"
+
+  local temp_home
+  local fake_bin
+  local apk_world_file
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  apk_world_file="$temp_home/world"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/apk" <<'EOF'
+#!/bin/sh
+if [ "$1" = "info" ] && [ "$2" = "-q" ]; then
+  printf '%s\n' bash git libc-utils
+fi
+EOF
+  chmod +x "$fake_bin/apk"
+  printf '%s\n' git bash >"$apk_world_file"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_APK_WORLD_FILE="$apk_world_file" \
+    -- system manifest
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.package_manager == "apk" and .packages == ["bash","git","libc-utils"] and .requested_packages == ["bash","git"]' >/dev/null || fail "Expected apk requested packages in system manifest, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_system_manifest_reports_dpkg_requested_packages() {
+  begin_test "agent.sh system manifest reports dpkg requested packages"
+
+  local temp_home
+  local fake_bin
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/dpkg-query" <<'EOF'
+#!/bin/sh
+printf '%s\n' bash libc6 tree
+EOF
+  cat >"$fake_bin/apt-mark" <<'EOF'
+#!/bin/sh
+if [ "$1" = "showmanual" ]; then
+  printf '%s\n' bash tree
+fi
+EOF
+  chmod +x "$fake_bin/dpkg-query" "$fake_bin/apt-mark"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    -- system manifest
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.package_manager == "dpkg" and .packages == ["bash","libc6","tree"] and .requested_packages == ["bash","tree"]' >/dev/null || fail "Expected dpkg requested packages in system manifest, got: $RUN_OUTPUT"
+}
+
 test_agent_sh_claude_runtime_install_runs_native_installer() {
   begin_test "agent.sh claude runtime install runs the native installer"
 
@@ -4606,6 +4664,8 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   assert_status 0
   assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
   assert_contains "  - ripgrep"
+  assert_contains "To reinstall after upgrade:"
+  assert_contains "su-exec --name unit-test-container apk add --no-cache ripgrep"
   assert_not_contains "  - curl"
   assert_not_contains "  - bash"
   assert_contains "Upgrade complete: unit-test-container (backup skipped)"
@@ -4613,6 +4673,59 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   [ "$start_calls" -eq 2 ] || fail "Expected 2 persisted start calls, got: $start_calls"
   [ "$stop_calls" -eq 2 ] || fail "Expected 2 persisted stop calls, got: $stop_calls"
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 persisted rm call, got: $rm_calls"
+}
+
+test_upgrade_reinstall_command_prefers_requested_apk_packages() {
+  begin_test "upgrade reinstall command prefers requested apk packages"
+
+  load_codexctl_functions
+
+  CLI_NAME=agentctl
+
+  run_capture warn_upgrade_package_loss \
+    unit-test-container \
+    agent-plain \
+    agent-python \
+    '{"package_manager":"apk","packages":["bash","gcc","g++","gmp","musl-dev"],"requested_packages":["bash","g++"]}' \
+    '{"package_manager":"apk","packages":["bash"],"requested_packages":["bash"]}' \
+    '{"package_manager":"apk","packages":["bash"],"requested_packages":["bash"]}' \
+    unit-test-container
+
+  assert_status 0
+  assert_contains "Upgrade will remove 4 extra apk package(s) not present in agent-python:"
+  assert_contains "  - g++"
+  assert_contains "  - gcc"
+  assert_contains "  - gmp"
+  assert_contains "  - musl-dev"
+  assert_contains "To reinstall top-level packages after upgrade:"
+  assert_contains "agentctl su-exec --name unit-test-container apk add --no-cache g++"
+  assert_not_contains "apk add --no-cache gcc"
+  assert_not_contains "apk add --no-cache gmp"
+  assert_not_contains "apk add --no-cache musl-dev"
+}
+
+test_upgrade_reinstall_command_prefers_requested_dpkg_packages() {
+  begin_test "upgrade reinstall command prefers requested dpkg packages"
+
+  load_codexctl_functions
+
+  CLI_NAME=agentctl
+
+  run_capture warn_upgrade_package_loss \
+    unit-test-container \
+    agent-swift \
+    agent-swift \
+    '{"package_manager":"dpkg","packages":["bash","libc6","tree"],"requested_packages":["bash","tree"]}' \
+    '{"package_manager":"dpkg","packages":["bash","libc6"],"requested_packages":["bash"]}' \
+    '{"package_manager":"dpkg","packages":["bash","libc6"],"requested_packages":["bash"]}' \
+    unit-test-container
+
+  assert_status 0
+  assert_contains "Upgrade will remove 1 extra dpkg package(s) not present in agent-swift:"
+  assert_contains "  - tree"
+  assert_contains "To reinstall top-level packages after upgrade:"
+  assert_contains "agentctl su-exec --name unit-test-container apt-get update"
+  assert_contains "agentctl su-exec --name unit-test-container apt-get install -y tree"
 }
 
 test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
@@ -4870,6 +4983,7 @@ test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   assert_status 0
   assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
   assert_contains "  - ripgrep"
+  assert_contains "su-exec --name unit-test-container apk add --no-cache ripgrep"
   assert_not_contains "Current image agent-plain is not available locally"
   assert_contains "Upgrade complete: unit-test-container (backup skipped)"
   printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
@@ -5731,6 +5845,8 @@ main() {
   test_agent_sh_runtime_capabilities_reports_manifest_commands
   test_agent_sh_claude_runtime_info_reports_skeleton_metadata
   test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state
+  test_agent_sh_system_manifest_reports_apk_requested_packages
+  test_agent_sh_system_manifest_reports_dpkg_requested_packages
   test_agent_sh_claude_runtime_install_runs_native_installer
   test_agent_sh_claude_runtime_update_calls_claude_update
   test_agent_sh_claude_runtime_reset_config_restores_settings
@@ -5800,6 +5916,8 @@ main() {
   test_upgrade_dry_run_reports_plan_without_recreating_container
   test_upgrade_copy_dry_run_reports_copy_plan
   test_upgrade_warns_about_added_packages_missing_from_target_image
+  test_upgrade_reinstall_command_prefers_requested_apk_packages
+  test_upgrade_reinstall_command_prefers_requested_dpkg_packages
   test_upgrade_reinstalls_added_runtimes_and_features_in_target
   test_upgrade_warns_and_clears_missing_preferred_runtime
   test_upgrade_uses_stored_baseline_when_current_image_is_missing

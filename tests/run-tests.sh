@@ -358,6 +358,56 @@ test_upgrade_overwrite_config_restores_image_defaults() {
   assert_contains "overwrite-config-ok"
 }
 
+test_system_manifest_requested_packages_on_agent_plain_apk() {
+  begin_test "system manifest reports requested apk packages on agent-plain"
+  local name
+  local workdir
+
+  name="$(unique_name manifest-apk)"
+  workdir="$(new_workdir)"
+  register_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" system-manifest --name "$name"
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '
+    .package_manager == "apk"
+    and (.packages | index("bash"))
+    and (.requested_packages | index("bash"))
+    and (.requested_packages | index("git"))
+  ' >/dev/null || fail "Expected requested apk packages in system manifest, got: $RUN_OUTPUT"
+}
+
+test_system_manifest_requested_packages_on_agent_swift_dpkg() {
+  begin_test "system manifest reports requested dpkg packages on agent-swift"
+  local name
+  local workdir
+
+  name="$(unique_name manifest-dpkg)"
+  workdir="$(new_workdir)"
+  register_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-swift --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" system-manifest --name "$name"
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '
+    .package_manager == "dpkg"
+    and (.packages | index("zsh"))
+    and (.requested_packages | index("zsh"))
+    and (.requested_packages | index("make"))
+  ' >/dev/null || fail "Expected requested dpkg packages in system manifest, got: $RUN_OUTPUT"
+}
+
 test_runtime_management_commands_work_for_existing_container() {
   begin_test "runtime list, info, capabilities, and use work for an existing container"
   local name
@@ -598,6 +648,8 @@ main() {
   run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact" full
   run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink" smoke
   run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink" full
+  run_selected_test test_system_manifest_requested_packages_on_agent_plain_apk "system manifest reports requested apk packages on agent-plain" full
+  run_selected_test test_system_manifest_requested_packages_on_agent_swift_dpkg "system manifest reports requested dpkg packages on agent-swift" full
   run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container" smoke
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
   run_selected_test test_runtime_info_claude_works_after_refresh_on_stopped_container "runtime info claude works after refresh when the container is stopped" smoke
