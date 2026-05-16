@@ -5,7 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=tests/testlib.sh
 . "$SCRIPT_DIR/testlib.sh"
 
-trap cleanup EXIT
+trap cleanup_and_report EXIT
 
 usage() {
   cat <<'EOF'
@@ -638,6 +638,7 @@ main() {
   if [ -n "$TEST_START_FROM" ]; then
     log "Running host tests from: $TEST_START_FROM"
   fi
+  start_leak_tracking
 
   run_selected_test test_temp_run_removes_container "run --temp removes the named container" smoke
   run_selected_test test_named_run_persists_until_rm "named run persists until explicit removal" smoke

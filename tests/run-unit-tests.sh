@@ -5788,6 +5788,44 @@ test_validate_backup_image_rejects_unbootable_backup() {
   assert_contains "Backup image agent-test-backup was built but cannot start /bin/sh"
 }
 
+test_validate_backup_image_stops_validation_container_before_remove() {
+  begin_test "validate_backup_image stops validation container before remove"
+
+  load_codexctl_functions
+
+  local call_log=""
+
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  date() { printf '20260406120000\n'; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      rm)
+        call_log="${call_log}rm $2"$'\n'
+        ;;
+      create)
+        call_log="${call_log}create $5"$'\n'
+        return 0
+        ;;
+      start)
+        call_log="${call_log}start $2"$'\n'
+        return 0
+        ;;
+      stop)
+        call_log="${call_log}stop $2"$'\n'
+        return 0
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  validate_backup_image agent-test-backup
+
+  printf '%s\n' "$call_log" | grep -Fq "stop agentctl-backup-validate-20260406120000-$$" || fail "Expected validation container stop before removal, got: $call_log"
+}
+
 main() {
   log "Using agentctl at $AGENTCTL"
   log "Using agentctl implementation at $AGENTCTL_IMPL"
@@ -5938,6 +5976,7 @@ main() {
   test_build_backup_image_uses_clean_context_for_exported_rootfs
   test_build_backup_image_preserves_flat_export_tar
   test_validate_backup_image_rejects_unbootable_backup
+  test_validate_backup_image_stops_validation_container_before_remove
 
   log "PASS: all shell unit tests completed"
 }
