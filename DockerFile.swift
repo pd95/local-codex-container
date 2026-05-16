@@ -8,7 +8,7 @@ ARG AGENT_DEFAULT_RUNTIME=codex
 RUN DEBIAN_FRONTEND=noninteractive \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        zsh npm file curl ripgrep jq util-linux bubblewrap \
+        zsh npm file curl perl ripgrep jq util-linux bubblewrap \
         make \
         python-is-python3 \
   && rm -rf /var/lib/apt/lists/*

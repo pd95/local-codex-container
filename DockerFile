@@ -6,7 +6,7 @@ ARG AGENT_DEFAULT_RUNTIME=codex
 
 # --- Core tooling ---
 RUN apk add --no-cache \
-        bash zsh npm file curl git ripgrep jq util-linux bubblewrap libgcc libstdc++
+        bash zsh npm file curl git perl ripgrep jq util-linux bubblewrap libgcc libstdc++
 
 # --- Add user ---
 RUN addgroup -S coder \
