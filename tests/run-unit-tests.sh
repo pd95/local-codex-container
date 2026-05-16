@@ -4161,6 +4161,82 @@ test_upgrade_can_rename_container_during_recreation() {
   [ "$restored_name" = "renamed-container" ] || fail "Expected config restore on renamed container, got: $restored_name"
 }
 
+test_upgrade_export_failure_restarts_running_source() {
+  begin_test "upgrade export failure restarts running source"
+
+  load_codexctl_functions
+
+  local start_log=""
+  local stop_log=""
+  local rm_log=""
+  local create_calls=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  require_container_backup_support() { return 0; }
+  warn_upgrade_package_loss() { :; }
+  upgrade_added_runtimes_json() { printf '[]\n'; }
+  upgrade_added_features_json() { printf '[]\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { [ "$1" = "unit-test-container" ]; }
+  image_exists() { return 0; }
+  codex_agents_state() { printf 'missing\n'; }
+  backup_codex_config() { :; }
+  collect_upgrade_container_preflight() {
+    UPGRADE_PREFLIGHT_CONTAINER_MANIFEST='{"package_manager":"apk","packages":[]}'
+    UPGRADE_PREFLIGHT_BASELINE_MANIFEST=''
+    UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT=1
+  }
+  image_system_manifest_json() { return 1; }
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  date() { printf '20260406120000\n'; }
+  trap() { :; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      inspect)
+        printf 'placeholder\n'
+        ;;
+      create)
+        create_calls=$((create_calls + 1))
+        ;;
+      start)
+        start_log="${start_log}${2}"$'\n'
+        ;;
+      stop)
+        stop_log="${stop_log}${2}"$'\n'
+        ;;
+      rm)
+        rm_log="${rm_log}${2}"$'\n'
+        ;;
+      export)
+        echo 'unknown: "could not read block 3217034"' >&2
+        return 1
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  container_upgrade_info() {
+    printf 'agent-plain\t%s\trw\t2\t4G\n' "$TEST_ROOT"
+  }
+  upgrade_cmd_wrapper() {
+    ( upgrade_cmd "$@" )
+  }
+
+  run_capture upgrade_cmd_wrapper --name unit-test-container
+  assert_status 1
+  assert_contains "Backing up user state from unit-test-container"
+  assert_contains "Stopping container: unit-test-container"
+  assert_contains "Exporting container state to image: unit-test-container-backup-20260406120000"
+  assert_contains "Restarting original container after failed export: unit-test-container"
+  assert_contains "Failed to export container filesystem for backup image. The original container was not removed."
+  assert_not_contains "Removing container: unit-test-container"
+  assert_not_contains "Recreating container: unit-test-container"
+}
+
 test_upgrade_copy_keeps_running_source_container() {
   begin_test "upgrade copy keeps the source container and creates a new target"
 
@@ -5718,6 +5794,7 @@ main() {
   test_upgrade_rejects_no_backup_for_legacy_source
   test_upgrade_uses_explicit_resource_overrides
   test_upgrade_can_rename_container_during_recreation
+  test_upgrade_export_failure_restarts_running_source
   test_upgrade_copy_keeps_running_source_container
   test_upgrade_copy_requires_new_name
   test_upgrade_dry_run_reports_plan_without_recreating_container

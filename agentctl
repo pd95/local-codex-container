@@ -1799,6 +1799,25 @@ backup_codex_config_from_export() {
   tar -C "$home_dir" -cf "$backup_file" "${state_paths[@]}"
 }
 
+export_container_for_upgrade() {
+  local name="$1"
+  local export_file="$2"
+  local restart_on_failure="${3:-0}"
+
+  if "$CONTAINER_CMD" export "$name" --output "$export_file"; then
+    return 0
+  fi
+
+  if [ "$restart_on_failure" -eq 1 ]; then
+    echo "Restarting original container after failed export: $name" >&2
+    if ! "$CONTAINER_CMD" start "$name" >/dev/null 2>&1; then
+      warn "Failed to restart $name after export failure; start it manually with: ${CLI_NAME} start --name $name"
+    fi
+  fi
+
+  die "Failed to export container filesystem for backup image. The original container was not removed. This usually indicates a container runtime storage/export error; retry after checking the runtime, or use '${CLI_NAME} upgrade --name $name --new-name <new-name> --copy' to create an upgraded copy without a full backup export."
+}
+
 restore_codex_config() {
   local name="$1"
   local backup_file="$2"
@@ -4174,7 +4193,7 @@ upgrade_cmd() {
 
   if [ "$was_running" -eq 0 ] && [ -n "$workdir_override" ] && [ ! -e "$current_workdir" ]; then
     echo "Exporting container filesystem for state backup: $name" >&2
-    "$CONTAINER_CMD" export "$name" --output "$export_file"
+    export_container_for_upgrade "$name" "$export_file" 0
     extract_export_root "$export_file" "$export_config_root"
     if export_root_supports_state_contract "$export_config_root"; then
       source_supports_state_contract=1
@@ -4237,7 +4256,7 @@ upgrade_cmd() {
   if [ "$copy_mode" -eq 0 ] && [ "$no_backup" -eq 0 ]; then
     if [ "$used_export_for_config_backup" -eq 0 ]; then
       echo "Exporting container state to image: $backup_image" >&2
-      "$CONTAINER_CMD" export "$name" --output "$export_file"
+      export_container_for_upgrade "$name" "$export_file" "$was_running"
     else
       echo "Reusing exported container state for backup image: $backup_image" >&2
     fi
