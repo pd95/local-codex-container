@@ -238,8 +238,11 @@ cleanup() {
   for image_ref in $CLEANUP_BACKUP_IMAGES; do
     cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
     if ! "$AGENTCTL" images prune --backup --image "$image_ref" --keep 0 >"$cleanup_log" 2>&1; then
-      printf '[test] cleanup failed for backup image %s:\n' "$image_ref" >&2
-      cat "$cleanup_log" >&2
+      if ! "$CONTAINER_CMD" image rm "$image_ref" >>"$cleanup_log" 2>&1 \
+        && ! "$CONTAINER_CMD" image rm "${image_ref}:latest" >>"$cleanup_log" 2>&1; then
+        printf '[test] cleanup failed for backup image %s:\n' "$image_ref" >&2
+        cat "$cleanup_log" >&2
+      fi
     fi
     rm -f "$cleanup_log" >/dev/null 2>&1 || true
   done
@@ -266,6 +269,7 @@ begin_test() {
 test_matches_filter() {
   local name="$1"
   local description="$2"
+  local normalized_filter="${TEST_FILTER// /_}"
 
   if [ -z "$TEST_FILTER" ]; then
     return 0
@@ -273,6 +277,7 @@ test_matches_filter() {
 
   case "$name"$'\n'"$description" in
     *"$TEST_FILTER"*) return 0 ;;
+    *"$normalized_filter"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -280,6 +285,7 @@ test_matches_filter() {
 test_matches_start_from() {
   local name="$1"
   local description="$2"
+  local normalized_start_from="${TEST_START_FROM// /_}"
 
   if [ -z "$TEST_START_FROM" ]; then
     return 0
@@ -290,6 +296,10 @@ test_matches_start_from() {
 
   case "$name"$'\n'"$description" in
     *"$TEST_START_FROM"*)
+      TEST_START_ACTIVE=1
+      return 0
+      ;;
+    *"$normalized_start_from"*)
       TEST_START_ACTIVE=1
       return 0
       ;;
