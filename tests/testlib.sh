@@ -19,8 +19,10 @@ RUN_LOG=""
 
 CLEANUP_CONTAINERS=""
 CLEANUP_RAW_CONTAINERS=""
+CLEANUP_IMAGES=""
 CLEANUP_BACKUP_IMAGES=""
 CLEANUP_DIRS=""
+LEAK_TRACKING_DIR=""
 
 log() {
   printf '[test] %s\n' "$*"
@@ -76,6 +78,14 @@ register_backup_cleanup() {
   CLEANUP_BACKUP_IMAGES="$CLEANUP_BACKUP_IMAGES $image_ref"
 }
 
+register_image_cleanup() {
+  local image_ref="$1"
+  case " $CLEANUP_IMAGES " in
+    *" $image_ref "*) return 0 ;;
+  esac
+  CLEANUP_IMAGES="$CLEANUP_IMAGES $image_ref"
+}
+
 register_dir_cleanup() {
   local path="$1"
   case " $CLEANUP_DIRS " in
@@ -90,6 +100,56 @@ container_exists() {
 
 container_running() {
   "$CONTAINER_CMD" ls 2>/dev/null | grep -q -E "(^|[[:space:]])$1([[:space:]]|$)"
+}
+
+snapshot_container_names() {
+  "$CONTAINER_CMD" ls -a 2>/dev/null | awk 'NR > 1 && NF > 0 { print $1 }' | sort -u
+}
+
+snapshot_image_refs() {
+  "$CONTAINER_CMD" image ls 2>/dev/null | awk 'NR > 1 && NF >= 2 { print $1 ":" $2 }' | sort -u
+}
+
+start_leak_tracking() {
+  LEAK_TRACKING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentctl-leak-tracking.XXXXXX")"
+  snapshot_container_names >"$LEAK_TRACKING_DIR/containers.before"
+  snapshot_image_refs >"$LEAK_TRACKING_DIR/images.before"
+}
+
+report_resource_leaks() {
+  local leaked_containers=""
+  local leaked_images=""
+
+  [ -n "$LEAK_TRACKING_DIR" ] || return 0
+  [ -d "$LEAK_TRACKING_DIR" ] || return 0
+
+  snapshot_container_names >"$LEAK_TRACKING_DIR/containers.after"
+  snapshot_image_refs >"$LEAK_TRACKING_DIR/images.after"
+
+  leaked_containers="$(comm -13 "$LEAK_TRACKING_DIR/containers.before" "$LEAK_TRACKING_DIR/containers.after" || true)"
+  leaked_images="$(comm -13 "$LEAK_TRACKING_DIR/images.before" "$LEAK_TRACKING_DIR/images.after" || true)"
+
+  if [ -n "$leaked_containers" ]; then
+    printf '[test] Warning: possible leaked container(s) created during this run:\n' >&2
+    printf '%s\n' "$leaked_containers" | sed 's/^/[test]   - /' >&2
+    printf '[test] Inspect with: container inspect <name>\n' >&2
+    printf '[test] Remove with: container rm <name> or agentctl rm --name <name> --force\n' >&2
+  fi
+
+  if [ -n "$leaked_images" ]; then
+    printf '[test] Warning: possible leaked image(s) created during this run:\n' >&2
+    printf '%s\n' "$leaked_images" | sed 's/^/[test]   - /' >&2
+    printf '[test] Inspect with: container image inspect <ref>\n' >&2
+    printf '[test] Remove with: container image rm <ref>\n' >&2
+  fi
+
+  rm -rf "$LEAK_TRACKING_DIR" >/dev/null 2>&1 || true
+  LEAK_TRACKING_DIR=""
+}
+
+cleanup_and_report() {
+  cleanup
+  report_resource_leaks
 }
 
 image_exists() {
@@ -152,24 +212,57 @@ cleanup() {
   local image_ref
   local name
   local path
-
-  for image_ref in $CLEANUP_BACKUP_IMAGES; do
-    "$AGENTCTL" images prune --backup --image "$image_ref" --keep 0 >/dev/null 2>&1 || true
-  done
+  local cleanup_log
 
   for name in $CLEANUP_CONTAINERS; do
     if container_exists "$name"; then
-      "$AGENTCTL" rm --name "$name" >/dev/null 2>&1 || true
+      cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+      if ! "$AGENTCTL" rm --name "$name" --force >"$cleanup_log" 2>&1; then
+        printf '[test] cleanup failed for container %s:\n' "$name" >&2
+        cat "$cleanup_log" >&2
+      fi
+      rm -f "$cleanup_log" >/dev/null 2>&1 || true
     fi
   done
 
   for name in $CLEANUP_RAW_CONTAINERS; do
     if "$CONTAINER_CMD" ls 2>/dev/null | grep -q -E "(^|[[:space:]])$name([[:space:]]|$)"; then
-      "$CONTAINER_CMD" stop "$name" >/dev/null 2>&1 || true
+      cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+      if ! "$CONTAINER_CMD" stop "$name" >"$cleanup_log" 2>&1; then
+        printf '[test] cleanup failed stopping raw container %s:\n' "$name" >&2
+        cat "$cleanup_log" >&2
+      fi
+      rm -f "$cleanup_log" >/dev/null 2>&1 || true
     fi
     if "$CONTAINER_CMD" ls -a 2>/dev/null | grep -q -E "(^|[[:space:]])$name([[:space:]]|$)"; then
-      "$CONTAINER_CMD" rm "$name" >/dev/null 2>&1 || true
+      cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+      if ! "$CONTAINER_CMD" rm "$name" >"$cleanup_log" 2>&1; then
+        printf '[test] cleanup failed removing raw container %s:\n' "$name" >&2
+        cat "$cleanup_log" >&2
+      fi
+      rm -f "$cleanup_log" >/dev/null 2>&1 || true
     fi
+  done
+
+  for image_ref in $CLEANUP_BACKUP_IMAGES; do
+    cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+    if ! "$AGENTCTL" images prune --backup --image "$image_ref" --keep 0 >"$cleanup_log" 2>&1; then
+      if ! "$CONTAINER_CMD" image rm "$image_ref" >>"$cleanup_log" 2>&1 \
+        && ! "$CONTAINER_CMD" image rm "${image_ref}:latest" >>"$cleanup_log" 2>&1; then
+        printf '[test] cleanup failed for backup image %s:\n' "$image_ref" >&2
+        cat "$cleanup_log" >&2
+      fi
+    fi
+    rm -f "$cleanup_log" >/dev/null 2>&1 || true
+  done
+
+  for image_ref in $CLEANUP_IMAGES; do
+    cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+    if ! "$CONTAINER_CMD" image rm "$image_ref" >"$cleanup_log" 2>&1; then
+      printf '[test] cleanup failed for image %s:\n' "$image_ref" >&2
+      cat "$cleanup_log" >&2
+    fi
+    rm -f "$cleanup_log" >/dev/null 2>&1 || true
   done
 
   for path in $CLEANUP_DIRS; do
@@ -194,6 +287,7 @@ begin_test() {
 test_matches_filter() {
   local name="$1"
   local description="$2"
+  local normalized_filter="${TEST_FILTER// /_}"
 
   if [ -z "$TEST_FILTER" ]; then
     return 0
@@ -201,6 +295,7 @@ test_matches_filter() {
 
   case "$name"$'\n'"$description" in
     *"$TEST_FILTER"*) return 0 ;;
+    *"$normalized_filter"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -208,6 +303,7 @@ test_matches_filter() {
 test_matches_start_from() {
   local name="$1"
   local description="$2"
+  local normalized_start_from="${TEST_START_FROM// /_}"
 
   if [ -z "$TEST_START_FROM" ]; then
     return 0
@@ -218,6 +314,10 @@ test_matches_start_from() {
 
   case "$name"$'\n'"$description" in
     *"$TEST_START_FROM"*)
+      TEST_START_ACTIVE=1
+      return 0
+      ;;
+    *"$normalized_start_from"*)
       TEST_START_ACTIVE=1
       return 0
       ;;

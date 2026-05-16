@@ -7,6 +7,48 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 trap cleanup EXIT
 
+usage() {
+  cat <<'EOF'
+Usage: ./tests/run-unit-tests.sh [--filter TEXT] [--from TEXT]
+       ./tests/run-unit-tests.sh [TEXT]
+
+Options:
+  --filter TEXT  Run only tests whose function name or description contains TEXT
+  --from TEXT    Run all tests starting at the first test whose function name or description contains TEXT
+
+If a single positional TEXT argument is provided, it is treated like --filter TEXT.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --filter)
+      TEST_FILTER="${2:-}"
+      [ -n "$TEST_FILTER" ] || fail "Missing value for --filter"
+      shift 2
+      ;;
+    --from)
+      TEST_START_FROM="${2:-}"
+      [ -n "$TEST_START_FROM" ] || fail "Missing value for --from"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      fail "Unknown option: $1"
+      ;;
+    *)
+      if [ -n "$TEST_FILTER" ]; then
+        fail "Unexpected positional argument: $1"
+      fi
+      TEST_FILTER="$1"
+      shift
+      ;;
+  esac
+done
+
 load_codexctl_functions() {
   local harness
 
@@ -1338,6 +1380,64 @@ test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state() {
     -- system manifest
   assert_status 0
   printf '%s' "$RUN_OUTPUT" | jq -er '.installed_runtimes == ["claude","codex"] and .installed_features == ["office"] and .default_runtime == "codex" and .preferred_runtime == "claude"' >/dev/null || fail "Expected richer system manifest JSON, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_system_manifest_reports_apk_requested_packages() {
+  begin_test "agent.sh system manifest reports apk requested packages"
+
+  local temp_home
+  local fake_bin
+  local apk_world_file
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  apk_world_file="$temp_home/world"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/apk" <<'EOF'
+#!/bin/sh
+if [ "$1" = "info" ] && [ "$2" = "-q" ]; then
+  printf '%s\n' bash git libc-utils
+fi
+EOF
+  chmod +x "$fake_bin/apk"
+  printf '%s\n' git bash >"$apk_world_file"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_APK_WORLD_FILE="$apk_world_file" \
+    -- system manifest
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.package_manager == "apk" and .packages == ["bash","git","libc-utils"] and .requested_packages == ["bash","git"]' >/dev/null || fail "Expected apk requested packages in system manifest, got: $RUN_OUTPUT"
+}
+
+test_agent_sh_system_manifest_reports_dpkg_requested_packages() {
+  begin_test "agent.sh system manifest reports dpkg requested packages"
+
+  local temp_home
+  local fake_bin
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  mkdir -p "$fake_bin"
+
+  cat >"$fake_bin/dpkg-query" <<'EOF'
+#!/bin/sh
+printf '%s\n' bash libc6 tree
+EOF
+  cat >"$fake_bin/apt-mark" <<'EOF'
+#!/bin/sh
+if [ "$1" = "showmanual" ]; then
+  printf '%s\n' bash tree
+fi
+EOF
+  chmod +x "$fake_bin/dpkg-query" "$fake_bin/apt-mark"
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    -- system manifest
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '.package_manager == "dpkg" and .packages == ["bash","libc6","tree"] and .requested_packages == ["bash","tree"]' >/dev/null || fail "Expected dpkg requested packages in system manifest, got: $RUN_OUTPUT"
 }
 
 test_agent_sh_claude_runtime_install_runs_native_installer() {
@@ -4606,6 +4706,8 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   assert_status 0
   assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
   assert_contains "  - ripgrep"
+  assert_contains "To reinstall after upgrade:"
+  assert_contains "su-exec --name unit-test-container apk add --no-cache ripgrep"
   assert_not_contains "  - curl"
   assert_not_contains "  - bash"
   assert_contains "Upgrade complete: unit-test-container (backup skipped)"
@@ -4613,6 +4715,59 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   [ "$start_calls" -eq 2 ] || fail "Expected 2 persisted start calls, got: $start_calls"
   [ "$stop_calls" -eq 2 ] || fail "Expected 2 persisted stop calls, got: $stop_calls"
   [ "$rm_calls" -eq 1 ] || fail "Expected 1 persisted rm call, got: $rm_calls"
+}
+
+test_upgrade_reinstall_command_prefers_requested_apk_packages() {
+  begin_test "upgrade reinstall command prefers requested apk packages"
+
+  load_codexctl_functions
+
+  CLI_NAME=agentctl
+
+  run_capture warn_upgrade_package_loss \
+    unit-test-container \
+    agent-plain \
+    agent-python \
+    '{"package_manager":"apk","packages":["bash","gcc","g++","gmp","musl-dev"],"requested_packages":["bash","g++"]}' \
+    '{"package_manager":"apk","packages":["bash"],"requested_packages":["bash"]}' \
+    '{"package_manager":"apk","packages":["bash"],"requested_packages":["bash"]}' \
+    unit-test-container
+
+  assert_status 0
+  assert_contains "Upgrade will remove 4 extra apk package(s) not present in agent-python:"
+  assert_contains "  - g++"
+  assert_contains "  - gcc"
+  assert_contains "  - gmp"
+  assert_contains "  - musl-dev"
+  assert_contains "To reinstall top-level packages after upgrade:"
+  assert_contains "agentctl su-exec --name unit-test-container apk add --no-cache g++"
+  assert_not_contains "apk add --no-cache gcc"
+  assert_not_contains "apk add --no-cache gmp"
+  assert_not_contains "apk add --no-cache musl-dev"
+}
+
+test_upgrade_reinstall_command_prefers_requested_dpkg_packages() {
+  begin_test "upgrade reinstall command prefers requested dpkg packages"
+
+  load_codexctl_functions
+
+  CLI_NAME=agentctl
+
+  run_capture warn_upgrade_package_loss \
+    unit-test-container \
+    agent-swift \
+    agent-swift \
+    '{"package_manager":"dpkg","packages":["bash","libc6","tree"],"requested_packages":["bash","tree"]}' \
+    '{"package_manager":"dpkg","packages":["bash","libc6"],"requested_packages":["bash"]}' \
+    '{"package_manager":"dpkg","packages":["bash","libc6"],"requested_packages":["bash"]}' \
+    unit-test-container
+
+  assert_status 0
+  assert_contains "Upgrade will remove 1 extra dpkg package(s) not present in agent-swift:"
+  assert_contains "  - tree"
+  assert_contains "To reinstall top-level packages after upgrade:"
+  assert_contains "agentctl su-exec --name unit-test-container apt-get update"
+  assert_contains "agentctl su-exec --name unit-test-container apt-get install -y tree"
 }
 
 test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
@@ -4870,6 +5025,7 @@ test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   assert_status 0
   assert_contains "Upgrade will remove 1 extra apk package(s) not present in agent-python:"
   assert_contains "  - ripgrep"
+  assert_contains "su-exec --name unit-test-container apk add --no-cache ripgrep"
   assert_not_contains "Current image agent-plain is not available locally"
   assert_contains "Upgrade complete: unit-test-container (backup skipped)"
   printf '%s\n' "$create_log" | grep -F -- "--name unit-test-container" >/dev/null || fail "Expected recreate call for unit-test-container, got: $create_log"
@@ -5674,152 +5830,202 @@ test_validate_backup_image_rejects_unbootable_backup() {
   assert_contains "Backup image agent-test-backup was built but cannot start /bin/sh"
 }
 
+test_validate_backup_image_stops_validation_container_before_remove() {
+  begin_test "validate_backup_image stops validation container before remove"
+
+  load_codexctl_functions
+
+  local call_log=""
+
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  date() { printf '20260406120000\n'; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      rm)
+        call_log="${call_log}rm $2"$'\n'
+        ;;
+      create)
+        call_log="${call_log}create $5"$'\n'
+        return 0
+        ;;
+      start)
+        call_log="${call_log}start $2"$'\n'
+        return 0
+        ;;
+      stop)
+        call_log="${call_log}stop $2"$'\n'
+        return 0
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+
+  validate_backup_image agent-test-backup
+
+  printf '%s\n' "$call_log" | grep -Fq "stop agentctl-backup-validate-20260406120000-$$" || fail "Expected validation container stop before removal, got: $call_log"
+}
+
 main() {
   log "Using agentctl at $AGENTCTL"
   log "Using agentctl implementation at $AGENTCTL_IMPL"
+  if [ -n "$TEST_FILTER" ]; then
+    log "Filtering unit tests by: $TEST_FILTER"
+  fi
+  if [ -n "$TEST_START_FROM" ]; then
+    log "Running unit tests from: $TEST_START_FROM"
+  fi
 
-  test_run_config_wires_runtime_config_json
-  test_run_help_reports_generic_runtime_config
-  test_run_help_reports_runtime_options
-  test_rescue_help_reports_backup_image_options
-  test_run_model_wires_selected_model
-  test_build_help_reports_primary_base_images
-  test_build_cmd_passes_runtime_list_build_args
-  test_build_cmd_uses_first_runtime_as_default_when_unspecified
-  test_build_cmd_default_runtime_alone_installs_only_that_runtime
-  test_build_cmd_rebuilds_existing_image_when_runtime_selection_is_overridden
-  test_run_cmd_runtime_selection_auto_installs_for_new_container
-  test_run_cmd_runtime_selection_does_not_auto_install_for_existing_container
-  test_build_cmd_warns_for_legacy_office_image
-  test_build_cmd_rejects_runtime_override_snapshot_combo
-  test_build_cmd_rejects_default_runtime_outside_runtime_list
-  test_run_cmd_rejects_invalid_runtime_config
-  test_run_cmd_rejects_install_runtime_without_runtime
-  test_run_cmd_rejects_auth_without_online
-  test_run_pre_exec_syncs_selected_runtime_auth_when_available
-  test_run_pre_exec_updates_codex_via_runtime_helper
-  test_run_container_reset_config_uses_runtime_helper
-  test_run_pre_exec_syncs_auth_for_preferred_runtime_when_unspecified
-  test_run_pre_exec_runs_local_model_preflight_for_preferred_claude
-  test_run_pre_exec_runs_local_model_preflight_for_preferred_codex
-  test_run_cmd_default_entrypoint_enables_local_runtime_preflight
-  test_sync_runtime_auth_to_container_if_available_skips_missing_keychain
-  test_auth_cmd_warns_for_legacy_office_image
-  test_feature_cmd_installs_via_root_helper
-  test_runtime_cmd_install_uses_root_helper
-  test_runtime_cmd_install_claude_warns_on_undersized_container
-  test_runtime_cmd_install_claude_reports_memory_guidance_on_failure
-  test_runtime_cmd_update_uses_root_helper
-  test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state
-  test_bootstrap_cmd_creates_and_bootstraps_new_alpine_container
-  test_bootstrap_cmd_bootstraps_apt_container
-  test_bootstrap_cmd_rejects_unsupported_base
-  test_agentctl_wrapper_usage_banner
-  test_refresh_help_reports_new_command
-  test_bootstrap_help_reports_new_command
-  test_system_manifest_help_reports_new_command
-  test_runtime_help_reports_new_command
-  test_feature_help_reports_new_command
-  test_use_help_reports_new_command
-  test_rm_help_reports_force_option
-  test_agent_sh_runtime_info_reports_registry_metadata
-  test_agent_sh_feature_list_reports_declared_features
-  test_agent_sh_feature_info_reports_manifest_metadata
-  test_agent_sh_feature_install_office_creates_feature_state
-  test_agent_sh_feature_info_reports_installed_after_office_install
-  test_agent_sh_runtime_list_reports_installed_runtimes_only
-  test_agent_sh_runtime_capabilities_reports_manifest_commands
-  test_agent_sh_claude_runtime_info_reports_skeleton_metadata
-  test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state
-  test_agent_sh_claude_runtime_install_runs_native_installer
-  test_agent_sh_claude_runtime_update_calls_claude_update
-  test_agent_sh_claude_runtime_reset_config_restores_settings
-  test_agent_sh_codex_runtime_reset_config_warns_about_lost_configuration
-  test_agent_sh_codex_run_defaults_to_workdir_cd
-  test_agent_sh_codex_run_uses_runtime_profile_config
-  test_agent_sh_accepts_explicit_empty_runtime_config_json
-  test_agent_sh_codex_run_uses_model_override
-  test_agent_sh_codex_online_run_skips_catalog_update
-  test_agent_sh_codex_local_run_updates_config_and_catalog
-  test_agent_sh_codex_local_metadata_status_uses_stderr
-  test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog
-  test_agent_sh_codex_local_run_updates_stale_catalog_entry
-  test_agent_sh_codex_local_run_reports_unchanged_catalog_entry
-  test_agent_sh_codex_local_run_uses_model_override_for_catalog
-  test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog
-  test_agent_sh_codex_local_run_creates_missing_catalog
-  test_agent_sh_codex_local_run_rejects_invalid_catalog_without_overwrite
-  test_agent_sh_codex_local_run_rejects_missing_myollama_provider
-  test_agent_sh_codex_local_run_api_show_failure_preserves_catalog
-  test_agent_sh_claude_run_uses_local_ollama_defaults
-  test_agent_sh_claude_run_respects_explicit_model
-  test_agent_sh_claude_run_uses_model_override
-  test_agent_sh_claude_run_uses_runtime_flag_config
-  test_agent_sh_rejects_unknown_runtime
-  test_agent_sh_preferred_round_trip
-  test_agent_sh_preferred_set_as_root_repairs_ownership
-  test_agent_sh_preferred_set_rejects_uninstalled_runtime
-  test_agent_sh_auth_read_rejects_invalid_codex_auth
-  test_agent_sh_auth_write_rejects_invalid_codex_auth
-  test_agent_sh_auth_write_codex_does_not_require_user_config_dir
-  test_agent_sh_claude_auth_read_includes_optional_home_state
-  test_agent_sh_claude_auth_read_rejects_invalid_credentials
-  test_agent_sh_claude_auth_write_restores_credentials_and_home_state
-  test_agent_sh_claude_auth_write_rejects_invalid_payload
-  test_agent_sh_state_export_includes_known_user_state
-  test_agent_sh_state_export_uses_installed_runtime_hooks
-  test_agent_sh_state_import_restores_known_user_state
-  test_agent_sh_state_import_uses_installed_runtime_hooks
-  test_agent_sh_state_import_with_empty_stdin_preserves_existing_state
-  test_container_auth_info_uses_agent_sh_auth_read
-  test_write_auth_blob_to_container_uses_agent_sh_auth_write
-  test_write_auth_blob_to_container_falls_back_for_legacy_codex
-  test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error
-  test_sync_runtime_auth_to_container_uses_runtime_parameters
-  test_sync_runtime_auth_from_container_uses_runtime_parameters
-  test_auth_info_from_json_parses_claude_oauth_payload
-  test_run_auth_flow_uses_agent_sh_auth_contract
-  test_run_auth_flow_skips_keychain_write_when_auth_unchanged
-  test_run_auth_flow_rejects_runtime_without_host_auth_support
-  test_run_auth_flow_installs_runtime_before_claude_auth
-  test_run_keychain_for_runtime_uses_runtime_specific_codex_slot
-  test_run_keychain_for_runtime_uses_runtime_specific_slot
-  test_rm_force_stops_running_container_before_remove
-  test_rescue_runs_command_in_temporary_backup_container
-  test_rescue_keep_leaves_container_running
-  test_image_ref_for_runtime_falls_back_to_legacy_when_present
-  test_ls_filters_non_codex_containers
-  test_upgrade_backup_support_check
-  test_run_rejects_resource_flags_for_existing_container
-  test_upgrade_rejects_no_backup_for_legacy_source
-  test_upgrade_uses_explicit_resource_overrides
-  test_upgrade_can_rename_container_during_recreation
-  test_upgrade_export_failure_restarts_running_source
-  test_upgrade_copy_keeps_running_source_container
-  test_upgrade_copy_requires_new_name
-  test_upgrade_dry_run_reports_plan_without_recreating_container
-  test_upgrade_copy_dry_run_reports_copy_plan
-  test_upgrade_warns_about_added_packages_missing_from_target_image
-  test_upgrade_reinstalls_added_runtimes_and_features_in_target
-  test_upgrade_warns_and_clears_missing_preferred_runtime
-  test_upgrade_uses_stored_baseline_when_current_image_is_missing
-  test_upgrade_accepts_workdir_override_when_original_mount_is_missing
-  test_upgrade_allows_no_backup_for_modern_export_source
-  test_container_baseline_manifest_starts_stopped_container_and_restores_state
-  test_collect_upgrade_container_preflight_starts_stopped_container_once
-  test_refresh_updates_managed_files_without_recreate
-  test_refresh_container_file_streams_source_via_stdin
-  test_system_manifest_starts_stopped_container_and_restores_state
-  test_runtime_cmd_starts_stopped_container_and_restores_state
-  test_runtime_cmd_propagates_exec_failures
-  test_use_cmd_sets_preferred_runtime_in_stopped_container
-  test_runtime_use_cmd_sets_preferred_runtime_in_stopped_container
-  test_cleanup_temp_dir_handles_read_only_trees
-  test_extract_container_export_rootfs_respects_oci_layer_order
-  test_validate_backup_rootfs_accepts_shell_symlink
-  test_build_backup_image_uses_clean_context_for_exported_rootfs
-  test_build_backup_image_preserves_flat_export_tar
-  test_validate_backup_image_rejects_unbootable_backup
+  run_selected_test test_run_config_wires_runtime_config_json "test_run_config_wires_runtime_config_json"
+  run_selected_test test_run_help_reports_generic_runtime_config "test_run_help_reports_generic_runtime_config"
+  run_selected_test test_run_help_reports_runtime_options "test_run_help_reports_runtime_options"
+  run_selected_test test_rescue_help_reports_backup_image_options "test_rescue_help_reports_backup_image_options"
+  run_selected_test test_run_model_wires_selected_model "test_run_model_wires_selected_model"
+  run_selected_test test_build_help_reports_primary_base_images "test_build_help_reports_primary_base_images"
+  run_selected_test test_build_cmd_passes_runtime_list_build_args "test_build_cmd_passes_runtime_list_build_args"
+  run_selected_test test_build_cmd_uses_first_runtime_as_default_when_unspecified "test_build_cmd_uses_first_runtime_as_default_when_unspecified"
+  run_selected_test test_build_cmd_default_runtime_alone_installs_only_that_runtime "test_build_cmd_default_runtime_alone_installs_only_that_runtime"
+  run_selected_test test_build_cmd_rebuilds_existing_image_when_runtime_selection_is_overridden "test_build_cmd_rebuilds_existing_image_when_runtime_selection_is_overridden"
+  run_selected_test test_run_cmd_runtime_selection_auto_installs_for_new_container "test_run_cmd_runtime_selection_auto_installs_for_new_container"
+  run_selected_test test_run_cmd_runtime_selection_does_not_auto_install_for_existing_container "test_run_cmd_runtime_selection_does_not_auto_install_for_existing_container"
+  run_selected_test test_build_cmd_warns_for_legacy_office_image "test_build_cmd_warns_for_legacy_office_image"
+  run_selected_test test_build_cmd_rejects_runtime_override_snapshot_combo "test_build_cmd_rejects_runtime_override_snapshot_combo"
+  run_selected_test test_build_cmd_rejects_default_runtime_outside_runtime_list "test_build_cmd_rejects_default_runtime_outside_runtime_list"
+  run_selected_test test_run_cmd_rejects_invalid_runtime_config "test_run_cmd_rejects_invalid_runtime_config"
+  run_selected_test test_run_cmd_rejects_install_runtime_without_runtime "test_run_cmd_rejects_install_runtime_without_runtime"
+  run_selected_test test_run_cmd_rejects_auth_without_online "test_run_cmd_rejects_auth_without_online"
+  run_selected_test test_run_pre_exec_syncs_selected_runtime_auth_when_available "test_run_pre_exec_syncs_selected_runtime_auth_when_available"
+  run_selected_test test_run_pre_exec_updates_codex_via_runtime_helper "test_run_pre_exec_updates_codex_via_runtime_helper"
+  run_selected_test test_run_container_reset_config_uses_runtime_helper "test_run_container_reset_config_uses_runtime_helper"
+  run_selected_test test_run_pre_exec_syncs_auth_for_preferred_runtime_when_unspecified "test_run_pre_exec_syncs_auth_for_preferred_runtime_when_unspecified"
+  run_selected_test test_run_pre_exec_runs_local_model_preflight_for_preferred_claude "test_run_pre_exec_runs_local_model_preflight_for_preferred_claude"
+  run_selected_test test_run_pre_exec_runs_local_model_preflight_for_preferred_codex "test_run_pre_exec_runs_local_model_preflight_for_preferred_codex"
+  run_selected_test test_run_cmd_default_entrypoint_enables_local_runtime_preflight "test_run_cmd_default_entrypoint_enables_local_runtime_preflight"
+  run_selected_test test_sync_runtime_auth_to_container_if_available_skips_missing_keychain "test_sync_runtime_auth_to_container_if_available_skips_missing_keychain"
+  run_selected_test test_auth_cmd_warns_for_legacy_office_image "test_auth_cmd_warns_for_legacy_office_image"
+  run_selected_test test_feature_cmd_installs_via_root_helper "test_feature_cmd_installs_via_root_helper"
+  run_selected_test test_runtime_cmd_install_uses_root_helper "test_runtime_cmd_install_uses_root_helper"
+  run_selected_test test_runtime_cmd_install_claude_warns_on_undersized_container "test_runtime_cmd_install_claude_warns_on_undersized_container"
+  run_selected_test test_runtime_cmd_install_claude_reports_memory_guidance_on_failure "test_runtime_cmd_install_claude_reports_memory_guidance_on_failure"
+  run_selected_test test_runtime_cmd_update_uses_root_helper "test_runtime_cmd_update_uses_root_helper"
+  run_selected_test test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state "test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state"
+  run_selected_test test_bootstrap_cmd_creates_and_bootstraps_new_alpine_container "test_bootstrap_cmd_creates_and_bootstraps_new_alpine_container"
+  run_selected_test test_bootstrap_cmd_bootstraps_apt_container "test_bootstrap_cmd_bootstraps_apt_container"
+  run_selected_test test_bootstrap_cmd_rejects_unsupported_base "test_bootstrap_cmd_rejects_unsupported_base"
+  run_selected_test test_agentctl_wrapper_usage_banner "test_agentctl_wrapper_usage_banner"
+  run_selected_test test_refresh_help_reports_new_command "test_refresh_help_reports_new_command"
+  run_selected_test test_bootstrap_help_reports_new_command "test_bootstrap_help_reports_new_command"
+  run_selected_test test_system_manifest_help_reports_new_command "test_system_manifest_help_reports_new_command"
+  run_selected_test test_runtime_help_reports_new_command "test_runtime_help_reports_new_command"
+  run_selected_test test_feature_help_reports_new_command "test_feature_help_reports_new_command"
+  run_selected_test test_use_help_reports_new_command "test_use_help_reports_new_command"
+  run_selected_test test_rm_help_reports_force_option "test_rm_help_reports_force_option"
+  run_selected_test test_agent_sh_runtime_info_reports_registry_metadata "test_agent_sh_runtime_info_reports_registry_metadata"
+  run_selected_test test_agent_sh_feature_list_reports_declared_features "test_agent_sh_feature_list_reports_declared_features"
+  run_selected_test test_agent_sh_feature_info_reports_manifest_metadata "test_agent_sh_feature_info_reports_manifest_metadata"
+  run_selected_test test_agent_sh_feature_install_office_creates_feature_state "test_agent_sh_feature_install_office_creates_feature_state"
+  run_selected_test test_agent_sh_feature_info_reports_installed_after_office_install "test_agent_sh_feature_info_reports_installed_after_office_install"
+  run_selected_test test_agent_sh_runtime_list_reports_installed_runtimes_only "test_agent_sh_runtime_list_reports_installed_runtimes_only"
+  run_selected_test test_agent_sh_runtime_capabilities_reports_manifest_commands "test_agent_sh_runtime_capabilities_reports_manifest_commands"
+  run_selected_test test_agent_sh_claude_runtime_info_reports_skeleton_metadata "test_agent_sh_claude_runtime_info_reports_skeleton_metadata"
+  run_selected_test test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state "test_agent_sh_system_manifest_includes_runtime_feature_and_preference_state"
+  run_selected_test test_agent_sh_system_manifest_reports_apk_requested_packages "test_agent_sh_system_manifest_reports_apk_requested_packages"
+  run_selected_test test_agent_sh_system_manifest_reports_dpkg_requested_packages "test_agent_sh_system_manifest_reports_dpkg_requested_packages"
+  run_selected_test test_agent_sh_claude_runtime_install_runs_native_installer "test_agent_sh_claude_runtime_install_runs_native_installer"
+  run_selected_test test_agent_sh_claude_runtime_update_calls_claude_update "test_agent_sh_claude_runtime_update_calls_claude_update"
+  run_selected_test test_agent_sh_claude_runtime_reset_config_restores_settings "test_agent_sh_claude_runtime_reset_config_restores_settings"
+  run_selected_test test_agent_sh_codex_runtime_reset_config_warns_about_lost_configuration "test_agent_sh_codex_runtime_reset_config_warns_about_lost_configuration"
+  run_selected_test test_agent_sh_codex_run_defaults_to_workdir_cd "test_agent_sh_codex_run_defaults_to_workdir_cd"
+  run_selected_test test_agent_sh_codex_run_uses_runtime_profile_config "test_agent_sh_codex_run_uses_runtime_profile_config"
+  run_selected_test test_agent_sh_accepts_explicit_empty_runtime_config_json "test_agent_sh_accepts_explicit_empty_runtime_config_json"
+  run_selected_test test_agent_sh_codex_run_uses_model_override "test_agent_sh_codex_run_uses_model_override"
+  run_selected_test test_agent_sh_codex_online_run_skips_catalog_update "test_agent_sh_codex_online_run_skips_catalog_update"
+  run_selected_test test_agent_sh_codex_local_run_updates_config_and_catalog "test_agent_sh_codex_local_run_updates_config_and_catalog"
+  run_selected_test test_agent_sh_codex_local_metadata_status_uses_stderr "test_agent_sh_codex_local_metadata_status_uses_stderr"
+  run_selected_test test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog "test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog"
+  run_selected_test test_agent_sh_codex_local_run_updates_stale_catalog_entry "test_agent_sh_codex_local_run_updates_stale_catalog_entry"
+  run_selected_test test_agent_sh_codex_local_run_reports_unchanged_catalog_entry "test_agent_sh_codex_local_run_reports_unchanged_catalog_entry"
+  run_selected_test test_agent_sh_codex_local_run_uses_model_override_for_catalog "test_agent_sh_codex_local_run_uses_model_override_for_catalog"
+  run_selected_test test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog "test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog"
+  run_selected_test test_agent_sh_codex_local_run_creates_missing_catalog "test_agent_sh_codex_local_run_creates_missing_catalog"
+  run_selected_test test_agent_sh_codex_local_run_rejects_invalid_catalog_without_overwrite "test_agent_sh_codex_local_run_rejects_invalid_catalog_without_overwrite"
+  run_selected_test test_agent_sh_codex_local_run_rejects_missing_myollama_provider "test_agent_sh_codex_local_run_rejects_missing_myollama_provider"
+  run_selected_test test_agent_sh_codex_local_run_api_show_failure_preserves_catalog "test_agent_sh_codex_local_run_api_show_failure_preserves_catalog"
+  run_selected_test test_agent_sh_claude_run_uses_local_ollama_defaults "test_agent_sh_claude_run_uses_local_ollama_defaults"
+  run_selected_test test_agent_sh_claude_run_respects_explicit_model "test_agent_sh_claude_run_respects_explicit_model"
+  run_selected_test test_agent_sh_claude_run_uses_model_override "test_agent_sh_claude_run_uses_model_override"
+  run_selected_test test_agent_sh_claude_run_uses_runtime_flag_config "test_agent_sh_claude_run_uses_runtime_flag_config"
+  run_selected_test test_agent_sh_rejects_unknown_runtime "test_agent_sh_rejects_unknown_runtime"
+  run_selected_test test_agent_sh_preferred_round_trip "test_agent_sh_preferred_round_trip"
+  run_selected_test test_agent_sh_preferred_set_as_root_repairs_ownership "test_agent_sh_preferred_set_as_root_repairs_ownership"
+  run_selected_test test_agent_sh_preferred_set_rejects_uninstalled_runtime "test_agent_sh_preferred_set_rejects_uninstalled_runtime"
+  run_selected_test test_agent_sh_auth_read_rejects_invalid_codex_auth "test_agent_sh_auth_read_rejects_invalid_codex_auth"
+  run_selected_test test_agent_sh_auth_write_rejects_invalid_codex_auth "test_agent_sh_auth_write_rejects_invalid_codex_auth"
+  run_selected_test test_agent_sh_auth_write_codex_does_not_require_user_config_dir "test_agent_sh_auth_write_codex_does_not_require_user_config_dir"
+  run_selected_test test_agent_sh_claude_auth_read_includes_optional_home_state "test_agent_sh_claude_auth_read_includes_optional_home_state"
+  run_selected_test test_agent_sh_claude_auth_read_rejects_invalid_credentials "test_agent_sh_claude_auth_read_rejects_invalid_credentials"
+  run_selected_test test_agent_sh_claude_auth_write_restores_credentials_and_home_state "test_agent_sh_claude_auth_write_restores_credentials_and_home_state"
+  run_selected_test test_agent_sh_claude_auth_write_rejects_invalid_payload "test_agent_sh_claude_auth_write_rejects_invalid_payload"
+  run_selected_test test_agent_sh_state_export_includes_known_user_state "test_agent_sh_state_export_includes_known_user_state"
+  run_selected_test test_agent_sh_state_export_uses_installed_runtime_hooks "test_agent_sh_state_export_uses_installed_runtime_hooks"
+  run_selected_test test_agent_sh_state_import_restores_known_user_state "test_agent_sh_state_import_restores_known_user_state"
+  run_selected_test test_agent_sh_state_import_uses_installed_runtime_hooks "test_agent_sh_state_import_uses_installed_runtime_hooks"
+  run_selected_test test_agent_sh_state_import_with_empty_stdin_preserves_existing_state "test_agent_sh_state_import_with_empty_stdin_preserves_existing_state"
+  run_selected_test test_container_auth_info_uses_agent_sh_auth_read "test_container_auth_info_uses_agent_sh_auth_read"
+  run_selected_test test_write_auth_blob_to_container_uses_agent_sh_auth_write "test_write_auth_blob_to_container_uses_agent_sh_auth_write"
+  run_selected_test test_write_auth_blob_to_container_falls_back_for_legacy_codex "test_write_auth_blob_to_container_falls_back_for_legacy_codex"
+  run_selected_test test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error "test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error"
+  run_selected_test test_sync_runtime_auth_to_container_uses_runtime_parameters "test_sync_runtime_auth_to_container_uses_runtime_parameters"
+  run_selected_test test_sync_runtime_auth_from_container_uses_runtime_parameters "test_sync_runtime_auth_from_container_uses_runtime_parameters"
+  run_selected_test test_auth_info_from_json_parses_claude_oauth_payload "test_auth_info_from_json_parses_claude_oauth_payload"
+  run_selected_test test_run_auth_flow_uses_agent_sh_auth_contract "test_run_auth_flow_uses_agent_sh_auth_contract"
+  run_selected_test test_run_auth_flow_skips_keychain_write_when_auth_unchanged "test_run_auth_flow_skips_keychain_write_when_auth_unchanged"
+  run_selected_test test_run_auth_flow_rejects_runtime_without_host_auth_support "test_run_auth_flow_rejects_runtime_without_host_auth_support"
+  run_selected_test test_run_auth_flow_installs_runtime_before_claude_auth "test_run_auth_flow_installs_runtime_before_claude_auth"
+  run_selected_test test_run_keychain_for_runtime_uses_runtime_specific_codex_slot "test_run_keychain_for_runtime_uses_runtime_specific_codex_slot"
+  run_selected_test test_run_keychain_for_runtime_uses_runtime_specific_slot "test_run_keychain_for_runtime_uses_runtime_specific_slot"
+  run_selected_test test_rm_force_stops_running_container_before_remove "test_rm_force_stops_running_container_before_remove"
+  run_selected_test test_rescue_runs_command_in_temporary_backup_container "test_rescue_runs_command_in_temporary_backup_container"
+  run_selected_test test_rescue_keep_leaves_container_running "test_rescue_keep_leaves_container_running"
+  run_selected_test test_image_ref_for_runtime_falls_back_to_legacy_when_present "test_image_ref_for_runtime_falls_back_to_legacy_when_present"
+  run_selected_test test_ls_filters_non_codex_containers "test_ls_filters_non_codex_containers"
+  run_selected_test test_upgrade_backup_support_check "test_upgrade_backup_support_check"
+  run_selected_test test_run_rejects_resource_flags_for_existing_container "test_run_rejects_resource_flags_for_existing_container"
+  run_selected_test test_upgrade_rejects_no_backup_for_legacy_source "test_upgrade_rejects_no_backup_for_legacy_source"
+  run_selected_test test_upgrade_uses_explicit_resource_overrides "test_upgrade_uses_explicit_resource_overrides"
+  run_selected_test test_upgrade_can_rename_container_during_recreation "test_upgrade_can_rename_container_during_recreation"
+  run_selected_test test_upgrade_export_failure_restarts_running_source "test_upgrade_export_failure_restarts_running_source"
+  run_selected_test test_upgrade_copy_keeps_running_source_container "test_upgrade_copy_keeps_running_source_container"
+  run_selected_test test_upgrade_copy_requires_new_name "test_upgrade_copy_requires_new_name"
+  run_selected_test test_upgrade_dry_run_reports_plan_without_recreating_container "test_upgrade_dry_run_reports_plan_without_recreating_container"
+  run_selected_test test_upgrade_copy_dry_run_reports_copy_plan "test_upgrade_copy_dry_run_reports_copy_plan"
+  run_selected_test test_upgrade_warns_about_added_packages_missing_from_target_image "test_upgrade_warns_about_added_packages_missing_from_target_image"
+  run_selected_test test_upgrade_reinstall_command_prefers_requested_apk_packages "test_upgrade_reinstall_command_prefers_requested_apk_packages"
+  run_selected_test test_upgrade_reinstall_command_prefers_requested_dpkg_packages "test_upgrade_reinstall_command_prefers_requested_dpkg_packages"
+  run_selected_test test_upgrade_reinstalls_added_runtimes_and_features_in_target "test_upgrade_reinstalls_added_runtimes_and_features_in_target"
+  run_selected_test test_upgrade_warns_and_clears_missing_preferred_runtime "test_upgrade_warns_and_clears_missing_preferred_runtime"
+  run_selected_test test_upgrade_uses_stored_baseline_when_current_image_is_missing "test_upgrade_uses_stored_baseline_when_current_image_is_missing"
+  run_selected_test test_upgrade_accepts_workdir_override_when_original_mount_is_missing "test_upgrade_accepts_workdir_override_when_original_mount_is_missing"
+  run_selected_test test_upgrade_allows_no_backup_for_modern_export_source "test_upgrade_allows_no_backup_for_modern_export_source"
+  run_selected_test test_container_baseline_manifest_starts_stopped_container_and_restores_state "test_container_baseline_manifest_starts_stopped_container_and_restores_state"
+  run_selected_test test_collect_upgrade_container_preflight_starts_stopped_container_once "test_collect_upgrade_container_preflight_starts_stopped_container_once"
+  run_selected_test test_refresh_updates_managed_files_without_recreate "test_refresh_updates_managed_files_without_recreate"
+  run_selected_test test_refresh_container_file_streams_source_via_stdin "test_refresh_container_file_streams_source_via_stdin"
+  run_selected_test test_system_manifest_starts_stopped_container_and_restores_state "test_system_manifest_starts_stopped_container_and_restores_state"
+  run_selected_test test_runtime_cmd_starts_stopped_container_and_restores_state "test_runtime_cmd_starts_stopped_container_and_restores_state"
+  run_selected_test test_runtime_cmd_propagates_exec_failures "test_runtime_cmd_propagates_exec_failures"
+  run_selected_test test_use_cmd_sets_preferred_runtime_in_stopped_container "test_use_cmd_sets_preferred_runtime_in_stopped_container"
+  run_selected_test test_runtime_use_cmd_sets_preferred_runtime_in_stopped_container "test_runtime_use_cmd_sets_preferred_runtime_in_stopped_container"
+  run_selected_test test_cleanup_temp_dir_handles_read_only_trees "test_cleanup_temp_dir_handles_read_only_trees"
+  run_selected_test test_extract_container_export_rootfs_respects_oci_layer_order "test_extract_container_export_rootfs_respects_oci_layer_order"
+  run_selected_test test_validate_backup_rootfs_accepts_shell_symlink "test_validate_backup_rootfs_accepts_shell_symlink"
+  run_selected_test test_build_backup_image_uses_clean_context_for_exported_rootfs "test_build_backup_image_uses_clean_context_for_exported_rootfs"
+  run_selected_test test_build_backup_image_preserves_flat_export_tar "test_build_backup_image_preserves_flat_export_tar"
+  run_selected_test test_validate_backup_image_rejects_unbootable_backup "test_validate_backup_image_rejects_unbootable_backup"
+  run_selected_test test_validate_backup_image_stops_validation_container_before_remove "test_validate_backup_image_stops_validation_container_before_remove"
+  assert_selected_tests_ran
 
   log "PASS: all shell unit tests completed"
 }

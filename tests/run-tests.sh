@@ -5,7 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=tests/testlib.sh
 . "$SCRIPT_DIR/testlib.sh"
 
-trap cleanup EXIT
+trap cleanup_and_report EXIT
 
 usage() {
   cat <<'EOF'
@@ -139,10 +139,14 @@ test_named_run_persists_until_rm() {
 
 test_build_rebuild_stops_buildkit() {
   begin_test "build --rebuild stops buildkit after a successful build"
+  local versioned_image
 
   run_capture "$AGENTCTL" build --image agent-plain --rebuild
   assert_status 0
   assert_contains "Building image tags: agent-plain,"
+  versioned_image="$(printf '%s\n' "$RUN_OUTPUT" | sed -n 's/^Building image tags: agent-plain, \(agent-plain:[^[:space:]]*\)$/\1/p' | tail -n 1)"
+  [ -n "$versioned_image" ] || fail "Could not parse versioned build image from output: $RUN_OUTPUT"
+  register_image_cleanup "$versioned_image"
 
   if ! "$CONTAINER_CMD" ls -a 2>/dev/null | grep -q -E '^buildkit[[:space:]]+.*[[:space:]]stopped([[:space:]]|$)'; then
     printf '%s\n' "$RUN_OUTPUT" >&2
@@ -356,6 +360,56 @@ test_upgrade_overwrite_config_restores_image_defaults() {
   run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd bash -lc 'if diff -q /etc/codexctl/config.toml /home/coder/.codex/config.toml && diff -q /etc/codexctl/local_models.json /home/coder/.codex/local_models.json && test -L /home/coder/.codex/AGENTS.md && [ "$(readlink /home/coder/.codex/AGENTS.md)" = "/etc/codexctl/image.md" ]; then echo overwrite-config-ok; else exit 1; fi'
   assert_status 0
   assert_contains "overwrite-config-ok"
+}
+
+test_system_manifest_requested_packages_on_agent_plain_apk() {
+  begin_test "system manifest reports requested apk packages on agent-plain"
+  local name
+  local workdir
+
+  name="$(unique_name manifest-apk)"
+  workdir="$(new_workdir)"
+  register_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-plain --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" system-manifest --name "$name"
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '
+    .package_manager == "apk"
+    and (.packages | index("bash"))
+    and (.requested_packages | index("bash"))
+    and (.requested_packages | index("git"))
+  ' >/dev/null || fail "Expected requested apk packages in system manifest, got: $RUN_OUTPUT"
+}
+
+test_system_manifest_requested_packages_on_agent_swift_dpkg() {
+  begin_test "system manifest reports requested dpkg packages on agent-swift"
+  local name
+  local workdir
+
+  name="$(unique_name manifest-dpkg)"
+  workdir="$(new_workdir)"
+  register_container_cleanup "$name"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-swift --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" refresh --name "$name"
+  assert_status 0
+
+  run_capture "$AGENTCTL" system-manifest --name "$name"
+  assert_status 0
+  printf '%s' "$RUN_OUTPUT" | jq -er '
+    .package_manager == "dpkg"
+    and (.packages | index("zsh"))
+    and (.requested_packages | index("zsh"))
+    and (.requested_packages | index("make"))
+  ' >/dev/null || fail "Expected requested dpkg packages in system manifest, got: $RUN_OUTPUT"
 }
 
 test_runtime_management_commands_work_for_existing_container() {
@@ -588,6 +642,7 @@ main() {
   if [ -n "$TEST_START_FROM" ]; then
     log "Running host tests from: $TEST_START_FROM"
   fi
+  start_leak_tracking
 
   run_selected_test test_temp_run_removes_container "run --temp removes the named container" smoke
   run_selected_test test_named_run_persists_until_rm "named run persists until explicit removal" smoke
@@ -598,6 +653,8 @@ main() {
   run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact" full
   run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink" smoke
   run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink" full
+  run_selected_test test_system_manifest_requested_packages_on_agent_plain_apk "system manifest reports requested apk packages on agent-plain" full
+  run_selected_test test_system_manifest_requested_packages_on_agent_swift_dpkg "system manifest reports requested dpkg packages on agent-swift" full
   run_selected_test test_runtime_management_commands_work_for_existing_container "runtime list, info, capabilities, and use work for an existing container" smoke
   run_selected_test test_refresh_pushes_runtime_registry_into_existing_container "refresh updates the runtime registry in an existing container" smoke
   run_selected_test test_runtime_info_claude_works_after_refresh_on_stopped_container "runtime info claude works after refresh when the container is stopped" smoke

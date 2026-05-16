@@ -541,17 +541,29 @@ json_feature_info() {
 }
 
 json_system_manifest() {
-  local package_manager packages_json runtimes_json features_json default_runtime preferred_runtime
+  local package_manager packages_json requested_packages_json runtimes_json features_json default_runtime preferred_runtime
+  local apk_world_file="${AGENTCTL_APK_WORLD_FILE:-/etc/apk/world}"
 
   if command -v apk >/dev/null 2>&1; then
     package_manager=apk
     packages_json="$(apk info -q 2>/dev/null | sort -u | jq -R . | jq -s .)"
+    if [ -f "$apk_world_file" ]; then
+      requested_packages_json="$(sed '/^[[:space:]]*$/d' "$apk_world_file" 2>/dev/null | sort -u | jq -R . | jq -s .)"
+    else
+      requested_packages_json='[]'
+    fi
   elif command -v dpkg-query >/dev/null 2>&1; then
     package_manager=dpkg
     packages_json="$(dpkg-query -W -f='${Package}\n' 2>/dev/null | sort -u | jq -R . | jq -s .)"
+    if command -v apt-mark >/dev/null 2>&1; then
+      requested_packages_json="$(apt-mark showmanual 2>/dev/null | sort -u | jq -R . | jq -s .)"
+    else
+      requested_packages_json='[]'
+    fi
   else
     package_manager=unknown
     packages_json='[]'
+    requested_packages_json='[]'
   fi
   runtimes_json="$(runtime_ids_installed | jq -R . | jq -s .)"
   features_json="$(feature_ids_installed | jq -R . | jq -s .)"
@@ -561,6 +573,7 @@ json_system_manifest() {
   jq -n \
     --arg package_manager "$package_manager" \
     --argjson packages "$packages_json" \
+    --argjson requested_packages "$requested_packages_json" \
     --argjson installed_runtimes "$runtimes_json" \
     --argjson installed_features "$features_json" \
     --arg default_runtime "$default_runtime" \
@@ -568,6 +581,7 @@ json_system_manifest() {
     '{
       package_manager: $package_manager,
       packages: $packages,
+      requested_packages: $requested_packages,
       installed_runtimes: $installed_runtimes,
       installed_features: $installed_features,
       default_runtime: $default_runtime,
