@@ -5294,6 +5294,214 @@ test_cleanup_temp_dir_handles_read_only_trees() {
   [ ! -e "$temp_dir" ] || fail "Expected cleanup_temp_dir to remove $temp_dir"
 }
 
+test_extract_container_export_rootfs_respects_oci_layer_order() {
+  begin_test "extract_container_export_rootfs applies OCI layers in manifest order"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local export_file
+  local rootfs_dir
+  local layout_dir
+  local layer_one_src
+  local layer_two_src
+  local layer_one_tar
+  local layer_two_tar
+  local layer_one_digest
+  local layer_two_digest
+  local manifest_file
+  local manifest_digest
+  local nonce=0
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-oci-export.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  export_file="$temp_dir/container-export.tar"
+  rootfs_dir="$temp_dir/rootfs"
+  layout_dir="$temp_dir/layout"
+  layer_one_src="$temp_dir/layer-one"
+  layer_two_src="$temp_dir/layer-two"
+  layer_one_tar="$temp_dir/layer-one.tar"
+  layer_two_tar="$temp_dir/layer-two.tar"
+
+  mkdir -p "$layer_one_src/home/coder" "$layer_one_src/bin"
+  printf '%s\n' old >"$layer_one_src/home/coder/state"
+  printf '%s\n' '#!/bin/sh' >"$layer_one_src/bin/sh"
+  tar -C "$layer_one_src" -cf "$layer_one_tar" .
+  layer_one_digest="$(sha256sum "$layer_one_tar" | awk '{print $1}')"
+
+  while :; do
+    rm -rf "$layer_two_src"
+    mkdir -p "$layer_two_src/home/coder"
+    printf 'new-%s\n' "$nonce" >"$layer_two_src/home/coder/state"
+    tar -C "$layer_two_src" -cf "$layer_two_tar" .
+    layer_two_digest="$(sha256sum "$layer_two_tar" | awk '{print $1}')"
+    if [[ "$layer_two_digest" < "$layer_one_digest" ]]; then
+      break
+    fi
+    nonce=$((nonce + 1))
+    [ "$nonce" -lt 200 ] || fail "Could not construct OCI layer digests for ordering regression"
+  done
+
+  mkdir -p "$layout_dir/blobs/sha256"
+  printf '{"imageLayoutVersion":"1.0.0"}\n' >"$layout_dir/oci-layout"
+  cp "$layer_one_tar" "$layout_dir/blobs/sha256/$layer_one_digest"
+  cp "$layer_two_tar" "$layout_dir/blobs/sha256/$layer_two_digest"
+  manifest_file="$temp_dir/manifest.json"
+  printf '{"schemaVersion":2,"layers":[{"digest":"sha256:%s"},{"digest":"sha256:%s"}]}\n' \
+    "$layer_one_digest" "$layer_two_digest" >"$manifest_file"
+  manifest_digest="$(sha256sum "$manifest_file" | awk '{print $1}')"
+  cp "$manifest_file" "$layout_dir/blobs/sha256/$manifest_digest"
+  printf '{"schemaVersion":2,"manifests":[{"digest":"sha256:%s"}]}\n' "$manifest_digest" >"$layout_dir/index.json"
+  tar -C "$layout_dir" -cf "$export_file" .
+
+  extract_container_export_rootfs "$export_file" "$rootfs_dir"
+
+  [ "$(cat "$rootfs_dir/home/coder/state")" = "new-$nonce" ] || fail "Expected later OCI layer to win"
+  [ -e "$rootfs_dir/bin/sh" ] || fail "Expected earlier OCI layer contents to be preserved"
+}
+
+test_validate_backup_rootfs_accepts_shell_symlink() {
+  begin_test "validate_backup_rootfs accepts shell symlinks"
+
+  load_codexctl_functions
+
+  local temp_dir
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-backup-rootfs.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+
+  mkdir -p "$temp_dir/rootfs/home/coder" "$temp_dir/rootfs/bin"
+  ln -s /bin/busybox "$temp_dir/rootfs/bin/sh"
+
+  validate_backup_rootfs "$temp_dir/rootfs" agent-test-backup
+}
+
+test_build_backup_image_uses_clean_context_for_exported_rootfs() {
+  begin_test "build_backup_image_from_export uses a tarred rootfs build context"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local export_root
+  local export_file
+  local backup_root
+  local backup_dockerfile
+  local build_context=""
+  local build_dockerfile=""
+  local validated_image=""
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-backup-build.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  export_root="$temp_dir/export-root"
+  export_file="$temp_dir/export.tar"
+  backup_root="$temp_dir/rootfs"
+  backup_dockerfile="$temp_dir/Dockerfile.backup"
+
+  mkdir -p "$export_root/home/coder" "$export_root/bin"
+  printf '*\n' >"$export_root/.dockerignore"
+  printf '%s\n' state >"$export_root/home/coder/state"
+  ln -s /bin/busybox "$export_root/bin/sh"
+  tar -C "$export_root" -cf "$export_file" .
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      build)
+        build_dockerfile="$5"
+        build_context="$6"
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  validate_backup_image() { validated_image="$1"; }
+
+  build_backup_image_from_export agent-test-backup unit-test-container "$export_file" "$backup_root" "$backup_dockerfile"
+
+  [ "$build_context" = "$backup_root.context" ] || fail "Expected clean wrapper build context, got: $build_context"
+  [ "$build_dockerfile" = "$backup_root.context/Dockerfile" ] || fail "Expected in-context backup Dockerfile, got: $build_dockerfile"
+  cmp "$build_dockerfile" "$backup_dockerfile" >/dev/null || fail "Expected external backup Dockerfile copy to match in-context Dockerfile"
+  [ ! -e "$build_context/.dockerignore" ] || fail "Did not expect exported .dockerignore at build context root"
+  [ -e "$build_context/rootfs/.dockerignore" ] || fail "Expected exported .dockerignore to be preserved under rootfs"
+  tar -tf "$build_context/rootfs.tar" | grep -Fx './.dockerignore' >/dev/null || fail "Expected rootfs tar to preserve exported .dockerignore"
+  tar -tf "$build_context/rootfs.tar" | grep -Fx './home/coder/state' >/dev/null || fail "Expected rootfs tar to include home state"
+  grep -Fq 'ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' "$backup_dockerfile" || fail "Expected backup Dockerfile to set PATH"
+  grep -Fq 'ADD rootfs.tar /' "$backup_dockerfile" || fail "Expected backup Dockerfile to add tarred rootfs"
+  [ "$validated_image" = "agent-test-backup" ] || fail "Expected backup image validation, got: $validated_image"
+}
+
+test_build_backup_image_preserves_flat_export_tar() {
+  begin_test "build_backup_image_from_export preserves flat export tar as build input"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local export_root
+  local export_file
+  local backup_root
+  local backup_dockerfile
+  local rootfs_tar
+
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-backup-flat.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  export_root="$temp_dir/export-root"
+  export_file="$temp_dir/export.tar"
+  backup_root="$temp_dir/rootfs"
+  backup_dockerfile="$temp_dir/Dockerfile.backup"
+  rootfs_tar="$backup_root.context/rootfs.tar"
+
+  mkdir -p "$export_root/home/coder" "$export_root/bin"
+  printf '%s\n' state >"$export_root/home/coder/state"
+  ln -s /bin/busybox "$export_root/bin/sh"
+  tar -C "$export_root" -cf "$export_file" .
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      build) ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  validate_backup_image() { :; }
+
+  build_backup_image_from_export agent-test-backup unit-test-container "$export_file" "$backup_root" "$backup_dockerfile"
+
+  cmp "$export_file" "$rootfs_tar" >/dev/null || fail "Expected flat export tar to be reused as rootfs.tar"
+}
+
+test_validate_backup_image_rejects_unbootable_backup() {
+  begin_test "validate_backup_image rejects backup images that cannot start /bin/sh"
+
+  load_codexctl_functions
+
+  sanitize_image_name() { printf '%s\n' "$1"; }
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      rm)
+        ;;
+      create)
+        return 0
+        ;;
+      start)
+        return 1
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  validate_backup_image_wrapper() {
+    ( validate_backup_image "$@" )
+  }
+
+  run_capture validate_backup_image_wrapper agent-test-backup
+  assert_status 1
+  assert_contains "Backup image agent-test-backup was built but cannot start /bin/sh"
+}
+
 main() {
   log "Using agentctl at $AGENTCTL"
   log "Using agentctl implementation at $AGENTCTL_IMPL"
@@ -5431,6 +5639,11 @@ main() {
   test_use_cmd_sets_preferred_runtime_in_stopped_container
   test_runtime_use_cmd_sets_preferred_runtime_in_stopped_container
   test_cleanup_temp_dir_handles_read_only_trees
+  test_extract_container_export_rootfs_respects_oci_layer_order
+  test_validate_backup_rootfs_accepts_shell_symlink
+  test_build_backup_image_uses_clean_context_for_exported_rootfs
+  test_build_backup_image_preserves_flat_export_tar
+  test_validate_backup_image_rejects_unbootable_backup
 
   log "PASS: all shell unit tests completed"
 }

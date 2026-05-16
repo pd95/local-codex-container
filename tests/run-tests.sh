@@ -223,6 +223,83 @@ test_upgrade_with_backup_creates_recovery_image() {
   assert_contains "backup-ok"
 }
 
+test_upgrade_backup_restores_home_and_boots_rescue_image() {
+  begin_test "upgrade backup restores home state and creates a bootable full-rootfs rescue image"
+  local name
+  local workdir
+  local backup_image
+  local rescue
+
+  name="$(unique_name upgrade-state-backup)"
+  workdir="$(new_workdir)"
+  backup_image="$(printf '%s\n' "${name}-backup-smoke" | tr '[:upper:]' '[:lower:]')"
+  rescue="$(printf '%s\n' "${name}-rescue" | tr '[:upper:]' '[:lower:]')"
+  register_container_cleanup "$name"
+  register_raw_container_cleanup "$rescue"
+  register_backup_cleanup "$backup_image"
+
+  run_capture "$AGENTCTL" run --name "$name" --image agent-python --mem 4G --workdir "$workdir" --cmd true
+  assert_status 0
+
+  run_capture "$AGENTCTL" start --name "$name"
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- sh -lc '
+set -e
+mkdir -p /home/coder/.codex /home/coder/.config/agentctl /home/coder/.claude
+printf "{\"refresh_token\":\"dummy-codex-token\"}\n" >/home/coder/.codex/auth.json
+printf "codex\n" >/home/coder/.config/agentctl/preferred-runtime
+printf "{\"claudeAiOauth\":{\"accessToken\":\"a\",\"refreshToken\":\"dummy-claude-token\",\"expiresAt\":1}}\n" >/home/coder/.claude/.credentials.json
+printf "{\"hasCompletedOnboarding\":true}\n" >/home/coder/.claude.json
+'
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" exec -u 0 "$name" sh -lc '
+set -e
+mkdir -p /etc/agentctl
+printf "etc-marker-before-upgrade\n" >/etc/agentctl/smoke-marker
+chown -R coder:coder /home/coder
+'
+  assert_status 0
+
+  run_capture "$AGENTCTL" upgrade --name "$name" --image agent-python --mem 4G --backup-image "$backup_image"
+  assert_status 0
+  assert_contains "Upgrade complete: $name (backup image: $backup_image)"
+
+  if ! container_running "$name"; then
+    run_capture "$AGENTCTL" start --name "$name"
+    assert_status 0
+  fi
+
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- sh -lc '
+set -e
+grep -q dummy-codex-token /home/coder/.codex/auth.json
+test "$(cat /home/coder/.config/agentctl/preferred-runtime)" = codex
+test "$(stat -c "%U:%G" /home/coder/.config)" = coder:coder
+echo home-state-restored
+'
+  assert_status 0
+  assert_contains "home-state-restored"
+
+  run_capture "$CONTAINER_CMD" create -t --name "$rescue" "$backup_image" sh -c 'sleep infinity'
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" start "$rescue"
+  assert_status 0
+
+  run_capture "$CONTAINER_CMD" exec "$rescue" sh -lc '
+set -e
+grep -q dummy-codex-token /home/coder/.codex/auth.json
+test "$(cat /home/coder/.config/agentctl/preferred-runtime)" = codex
+test "$(cat /etc/agentctl/smoke-marker)" = etc-marker-before-upgrade
+test -x /bin/sh -o -x /usr/bin/sh
+test "$(stat -c "%U:%G" /home/coder/.config)" = coder:coder
+echo backup-image-rootfs-valid
+'
+  assert_status 0
+  assert_contains "backup-image-rootfs-valid"
+}
+
 test_upgrade_preflight_failure_keeps_container() {
   begin_test "upgrade preflight failure leaves the original container intact"
   local name
@@ -523,6 +600,7 @@ main() {
   run_selected_test test_build_rebuild_stops_buildkit "build --rebuild stops buildkit after a successful build" full
   run_selected_test test_upgrade_no_backup_preserves_state "upgrade --no-backup preserves state without creating backup images" full
   run_selected_test test_upgrade_with_backup_creates_recovery_image "upgrade creates a backup image by default" full
+  run_selected_test test_upgrade_backup_restores_home_and_boots_rescue_image "upgrade backup restores home state and creates a bootable full-rootfs rescue image" full
   run_selected_test test_upgrade_preflight_failure_keeps_container "upgrade preflight failure leaves the original container intact" full
   run_selected_test test_run_reset_config_restores_image_defaults "run --reset-config restores config, models, and AGENTS symlink" smoke
   run_selected_test test_upgrade_overwrite_config_restores_image_defaults "upgrade --overwrite-config restores config, models, and AGENTS symlink" full
