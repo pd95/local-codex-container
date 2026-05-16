@@ -139,10 +139,14 @@ test_named_run_persists_until_rm() {
 
 test_build_rebuild_stops_buildkit() {
   begin_test "build --rebuild stops buildkit after a successful build"
+  local versioned_image
 
   run_capture "$AGENTCTL" build --image agent-plain --rebuild
   assert_status 0
   assert_contains "Building image tags: agent-plain,"
+  versioned_image="$(printf '%s\n' "$RUN_OUTPUT" | sed -n 's/^Building image tags: agent-plain, \(agent-plain:[^[:space:]]*\)$/\1/p' | tail -n 1)"
+  [ -n "$versioned_image" ] || fail "Could not parse versioned build image from output: $RUN_OUTPUT"
+  register_image_cleanup "$versioned_image"
 
   if ! "$CONTAINER_CMD" ls -a 2>/dev/null | grep -q -E '^buildkit[[:space:]]+.*[[:space:]]stopped([[:space:]]|$)'; then
     printf '%s\n' "$RUN_OUTPUT" >&2

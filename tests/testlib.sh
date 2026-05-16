@@ -19,6 +19,7 @@ RUN_LOG=""
 
 CLEANUP_CONTAINERS=""
 CLEANUP_RAW_CONTAINERS=""
+CLEANUP_IMAGES=""
 CLEANUP_BACKUP_IMAGES=""
 CLEANUP_DIRS=""
 LEAK_TRACKING_DIR=""
@@ -75,6 +76,14 @@ register_backup_cleanup() {
     *" $image_ref "*) return 0 ;;
   esac
   CLEANUP_BACKUP_IMAGES="$CLEANUP_BACKUP_IMAGES $image_ref"
+}
+
+register_image_cleanup() {
+  local image_ref="$1"
+  case " $CLEANUP_IMAGES " in
+    *" $image_ref "*) return 0 ;;
+  esac
+  CLEANUP_IMAGES="$CLEANUP_IMAGES $image_ref"
 }
 
 register_dir_cleanup() {
@@ -243,6 +252,15 @@ cleanup() {
         printf '[test] cleanup failed for backup image %s:\n' "$image_ref" >&2
         cat "$cleanup_log" >&2
       fi
+    fi
+    rm -f "$cleanup_log" >/dev/null 2>&1 || true
+  done
+
+  for image_ref in $CLEANUP_IMAGES; do
+    cleanup_log="$(mktemp "${TMPDIR:-/tmp}/agentctl-cleanup.XXXXXX")"
+    if ! "$CONTAINER_CMD" image rm "$image_ref" >"$cleanup_log" 2>&1; then
+      printf '[test] cleanup failed for image %s:\n' "$image_ref" >&2
+      cat "$cleanup_log" >&2
     fi
     rm -f "$cleanup_log" >/dev/null 2>&1 || true
   done
