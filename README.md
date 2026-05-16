@@ -191,6 +191,13 @@ container, recreate it with `agentctl upgrade --image ...`. For example:
 agentctl upgrade --name <container> --image agent-python
 ```
 
+Upgrades create backup images by default. To inspect a backup image without
+refreshing it or mounting the current workdir, use `rescue`:
+
+```bash
+agentctl rescue --image <container>-backup-<timestamp>
+```
+
 If you already have a compatible base container and want to bring the managed
 control surface onto it, use `agentctl bootstrap` instead of starting from a
 curated image. More on that in [docs/bootstrap.md](docs/bootstrap.md).
