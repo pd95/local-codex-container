@@ -97,20 +97,120 @@ cleanup_temp_dir() {
   rm -rf "$path" >/dev/null 2>&1 || true
 }
 
+oci_blob_path() {
+  local staging_dir="$1"
+  local digest="$2"
+  local algorithm="${digest%%:*}"
+  local value="${digest#*:}"
+
+  [ -n "$algorithm" ] && [ -n "$value" ] && [ "$algorithm" != "$digest" ] || return 1
+  printf '%s\n' "$staging_dir/blobs/$algorithm/$value"
+}
+
+extract_container_export_rootfs() {
+  local export_file="$1"
+  local rootfs_dir="$2"
+  local staging_dir="${rootfs_dir}.export"
+  local manifest_digest=""
+  local manifest_file=""
+  local layer_file=""
+  local extracted_layer=0
+
+  rm -rf "$rootfs_dir" "$staging_dir"
+  mkdir -p "$rootfs_dir" "$staging_dir"
+  tar -xf "$export_file" -C "$staging_dir"
+
+  if [ -f "$staging_dir/oci-layout" ] && [ -d "$staging_dir/blobs" ]; then
+    [ -f "$staging_dir/index.json" ] || die "Container export did not contain an OCI index"
+    manifest_digest="$(jq -er '.manifests[0].digest // empty' "$staging_dir/index.json")" || die "Container export did not contain an OCI manifest"
+    manifest_file="$(oci_blob_path "$staging_dir" "$manifest_digest")" || die "Container export contained an invalid OCI manifest digest"
+    [ -f "$manifest_file" ] || die "Container export referenced a missing OCI manifest blob"
+    while IFS= read -r layer_file; do
+      [ -n "$layer_file" ] || continue
+      [ -f "$layer_file" ] || die "Container export referenced a missing OCI layer blob"
+      tar -xf "$layer_file" -C "$rootfs_dir"
+      extracted_layer=1
+    done <<EOF_LAYERS
+$(jq -er '.layers[].digest' "$manifest_file" | while IFS= read -r layer_digest; do oci_blob_path "$staging_dir" "$layer_digest"; done)
+EOF_LAYERS
+    rm -rf "$staging_dir"
+    [ "$extracted_layer" -eq 1 ] || die "Container export did not contain any extractable filesystem layers"
+    return 0
+  fi
+
+  tar -C "$staging_dir" -cf - . | tar -C "$rootfs_dir" -xf -
+  rm -rf "$staging_dir"
+}
+
+container_export_is_oci_layout() {
+  local export_file="$1"
+
+  tar -tf "$export_file" 2>/dev/null | grep -Fqx 'oci-layout'
+}
+
+container_export_rootfs_tar() {
+  local export_file="$1"
+  local rootfs_tar="$2"
+  local extract_root="$3"
+
+  if container_export_is_oci_layout "$export_file"; then
+    mkdir -p "$extract_root"
+    extract_container_export_rootfs "$export_file" "$extract_root"
+    tar -C "$extract_root" -cf "$rootfs_tar" .
+  else
+    cp "$export_file" "$rootfs_tar"
+  fi
+}
+
+validate_backup_rootfs() {
+  local backup_root="$1"
+  local backup_image="$2"
+
+  [ -d "$backup_root/home/coder" ] || die "Backup image $backup_image was not created because container export did not include /home/coder"
+  [ -e "$backup_root/bin/sh" ] || [ -L "$backup_root/bin/sh" ] || [ -e "$backup_root/usr/bin/sh" ] || [ -L "$backup_root/usr/bin/sh" ] || die "Backup image $backup_image was not created because container export did not include a shell"
+}
+
+validate_backup_image() {
+  local backup_image="$1"
+  local temp_name
+  temp_name="$(sanitize_image_name "agentctl-backup-validate-$(date -u +%Y%m%d%H%M%S)-$$")"
+
+  "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+  if ! "$CONTAINER_CMD" create -t --name "$temp_name" "$backup_image" /bin/sh -c 'test -d /home/coder' >/dev/null; then
+    "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+    die "Backup image $backup_image was built but cannot create a validation container"
+  fi
+  if ! "$CONTAINER_CMD" start "$temp_name" >/dev/null; then
+    "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+    die "Backup image $backup_image was built but cannot start /bin/sh"
+  fi
+  "$CONTAINER_CMD" rm "$temp_name" >/dev/null 2>&1 || true
+}
+
 build_backup_image_from_export() {
   local backup_image="$1"
   local container_name="$2"
   local export_file="$3"
   local backup_root="$4"
   local backup_dockerfile="$5"
+  local backup_context="${backup_root}.context"
+  local context_rootfs="$backup_context/rootfs"
+  local context_dockerfile="$backup_context/Dockerfile"
+  local context_rootfs_tar="$backup_context/rootfs.tar"
 
-  mkdir -p "$backup_root"
-  tar -xf "$export_file" -C "$backup_root"
-  cat >"$backup_dockerfile" <<EOF
+  rm -rf "$backup_root" "$backup_context"
+  mkdir -p "$context_rootfs"
+  container_export_rootfs_tar "$export_file" "$context_rootfs_tar" "$context_rootfs"
+  tar -xf "$context_rootfs_tar" -C "$context_rootfs"
+  validate_backup_rootfs "$context_rootfs" "$backup_image"
+  cat >"$context_dockerfile" <<EOF
 FROM scratch
-COPY . /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ADD rootfs.tar /
 EOF
-  "$CONTAINER_CMD" build -t "$backup_image" -f "$backup_dockerfile" "$backup_root"
+  cp "$context_dockerfile" "$backup_dockerfile"
+  "$CONTAINER_CMD" build -t "$backup_image" -f "$context_dockerfile" "$backup_context"
+  validate_backup_image "$backup_image"
 }
 
 container_mount_mode() {
@@ -1653,7 +1753,7 @@ extract_export_root() {
   if [ -f "$marker_file" ]; then
     return 0
   fi
-  tar -xf "$export_file" -C "$extract_root"
+  extract_container_export_rootfs "$export_file" "$extract_root"
   : >"$marker_file"
 }
 
@@ -1694,6 +1794,8 @@ rm -rf \
   /home/coder/.config/agentctl \
   /home/coder/.claude \
   /home/coder/.claude.json
+mkdir -p /home/coder/.config
+chown -R coder:coder /home/coder
 '
   if target_supports_state_contract "$name"; then
     "$CONTAINER_CMD" exec -i "$name" "${SETPRIV_ARGS[@]}" bash /usr/local/bin/agent.sh state import <"$backup_file"
