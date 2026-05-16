@@ -1790,7 +1790,25 @@ backup_codex_config_from_export() {
   home_dir="$extract_root/home/coder"
   [ -d "$home_dir" ] || return 0
 
-  for path in .codex .config/agentctl .claude .claude.json; do
+  for path in \
+    .codex \
+    .config/agentctl \
+    .claude \
+    .claude.json \
+    .profile \
+    .bashrc \
+    .bash_profile \
+    .bash_login \
+    .bash_logout \
+    .bash_history \
+    .zshrc \
+    .zprofile \
+    .zlogin \
+    .zlogout \
+    .zshenv \
+    .zsh_history \
+    .ash_history \
+    .sh_history; do
     if [ -e "$home_dir/$path" ]; then
       state_paths+=("$path")
     fi
@@ -1851,7 +1869,25 @@ backup_known_state_from_container() {
   local path_list=""
 
   path_list="$("$CONTAINER_CMD" exec "$name" "${SETPRIV_ARGS[@]}" sh -lc '
-for path in .codex .config/agentctl .claude .claude.json; do
+for path in \
+  .codex \
+  .config/agentctl \
+  .claude \
+  .claude.json \
+  .profile \
+  .bashrc \
+  .bash_profile \
+  .bash_login \
+  .bash_logout \
+  .bash_history \
+  .zshrc \
+  .zprofile \
+  .zlogin \
+  .zlogout \
+  .zshenv \
+  .zsh_history \
+  .ash_history \
+  .sh_history; do
   if [ -e "/home/coder/$path" ]; then
     printf "%s\n" "$path"
   fi

@@ -262,12 +262,16 @@ printf "{\"refresh_token\":\"codex-token\"}\n" >/home/coder/.codex/auth.json
 printf "{\"claudeAiOauth\":{\"accessToken\":\"a\",\"refreshToken\":\"should-not-survive\",\"expiresAt\":1}}\n" >/home/coder/.claude/.credentials.json
 printf "{\"hasCompletedOnboarding\":true}\n" >/home/coder/.claude.json
 printf "codex\n" >/home/coder/.config/agentctl/preferred-runtime
+printf "export PATH=\"\$HOME/go/bin:\$PATH\"\n" >/home/coder/.profile
+printf "apk add --no-cache go\n" >/home/coder/.bash_history
 '
 
 agentctl upgrade --name state-hook-smoke --image agent-python --no-backup
 agentctl exec --name state-hook-smoke sh -lc '
 cat /home/coder/.codex/auth.json
 cat /home/coder/.config/agentctl/preferred-runtime
+grep -q "go/bin" /home/coder/.profile && echo profile-restored
+grep -q "apk add --no-cache go" /home/coder/.bash_history && echo bash-history-restored
 test ! -e /home/coder/.claude/.credentials.json && echo claude-dir-missing
 test ! -e /home/coder/.claude.json && echo claude-home-missing
 '
@@ -300,6 +304,8 @@ Expected output should include:
 - Phase 1:
   - the Codex auth JSON payload
   - `codex`
+  - `profile-restored`
+  - `bash-history-restored`
   - `claude-dir-missing`
   - `claude-home-missing`
 - Phase 2:
