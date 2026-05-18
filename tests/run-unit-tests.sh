@@ -2097,6 +2097,7 @@ EOF
       "slug": "gpt-oss:20b",
       "display_name": "old name",
       "context_window": 1,
+      "apply_patch_tool_type": "function",
       "reasoning_summary_format": "none",
       "default_reasoning_summary": "auto",
       "default_reasoning_level": "medium",
@@ -2119,6 +2120,7 @@ EOF
     .models[0].slug == "gpt-oss:20b" and
     .models[0].display_name == "gpt-oss:20b" and
     .models[0].context_window == 16384 and
+    .models[0].apply_patch_tool_type == "freeform" and
     .models[0].custom == "keep" and
     .models[0].input_modalities == ["text"] and
     .models[0].supports_reasoning_summaries == false and
@@ -2178,7 +2180,7 @@ EOF
         slug: "gpt-oss:20b",
         display_name: "gpt-oss:20b",
         context_window: 4096,
-        apply_patch_tool_type: "function",
+        apply_patch_tool_type: "freeform",
         shell_type: "default",
         visibility: "list",
         supported_in_api: true,

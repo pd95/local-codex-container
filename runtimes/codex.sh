@@ -341,7 +341,7 @@ codex_build_model_entry() {
       slug: $slug,
       display_name: $display_name,
       context_window: $context_window,
-      apply_patch_tool_type: "function",
+      apply_patch_tool_type: "freeform",
       shell_type: "default",
       visibility: "list",
       supported_in_api: true,
