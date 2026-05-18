@@ -248,7 +248,7 @@ test_upgrade_backup_restores_home_and_boots_rescue_image() {
   run_capture "$AGENTCTL" start --name "$name"
   assert_status 0
 
-  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- sh -lc '
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --no-new-privs -- sh -lc '
 set -e
 mkdir -p /home/coder/.codex /home/coder/.config/agentctl /home/coder/.claude
 printf "{\"refresh_token\":\"dummy-codex-token\"}\n" >/home/coder/.codex/auth.json
@@ -275,7 +275,7 @@ chown -R coder:coder /home/coder
     assert_status 0
   fi
 
-  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- sh -lc '
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --no-new-privs -- sh -lc '
 set -e
 grep -q dummy-codex-token /home/coder/.codex/auth.json
 test "$(cat /home/coder/.config/agentctl/preferred-runtime)" = codex
@@ -436,7 +436,7 @@ test_runtime_management_commands_work_for_existing_container() {
   assert_status 0
   assert_contains "Preferred runtime set to codex in $name"
 
-  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- cat /home/coder/.config/agentctl/preferred-runtime
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --no-new-privs -- cat /home/coder/.config/agentctl/preferred-runtime
   assert_status 0
   assert_contains "codex"
 }
@@ -457,7 +457,7 @@ test_refresh_pushes_runtime_registry_into_existing_container() {
   assert_status 0
   assert_contains "Refresh complete: $name"
 
-  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs -- bash -lc '
+  run_capture "$CONTAINER_CMD" exec "$name" setpriv --inh-caps=-all --ambient-caps=-all --no-new-privs -- bash -lc '
     bash /usr/local/bin/agent.sh runtime info codex \
       | jq -e '"'"'.runtime == "codex" and .install_method == "npm-global"'"'"' >/dev/null
     bash /usr/local/bin/agent.sh runtime info claude \
