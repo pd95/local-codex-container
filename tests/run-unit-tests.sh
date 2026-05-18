@@ -2226,6 +2226,76 @@ EOF
   [ "$catalog_mtime_after" = "$catalog_mtime_before" ] || fail "Expected unchanged Codex model catalog timestamp to be preserved"
 }
 
+test_agent_sh_codex_local_run_migrates_inactive_catalog_entries() {
+  begin_test "agent.sh codex local run migrates inactive model catalog entries"
+
+  local temp_home
+  local fake_bin
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  mkdir -p "$fake_bin" "$temp_home/home/.codex"
+
+  cat >"$fake_bin/codex" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$fake_bin/codex"
+  cat >"$fake_bin/curl" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *'/api/version'*) printf '{"version":"0.0.0"}\n'; exit 0 ;;
+  *'/api/show'*)
+    cat >/dev/null
+    printf '{"system":"","capabilities":[],"details":{"format":"safetensors"},"model_info":{"llama.context_length":4096},"parameters":""}\n'
+    exit 0
+    ;;
+esac
+exit 1
+EOF
+  chmod +x "$fake_bin/curl"
+  cat >"$temp_home/proc-net-route" <<'EOF'
+Iface   Destination Gateway     Flags RefCnt Use Metric Mask        MTU Window IRTT
+eth0    00000000    0100A8C0    0003  0      0   0      00000000    0   0      0
+EOF
+  cat >"$temp_home/home/.codex/config.toml" <<'EOF'
+[model_providers.myollama]
+name = "Ollama"
+
+[profiles.gpt-oss]
+model_provider = "myollama"
+model = "active:model"
+EOF
+  cat >"$temp_home/home/.codex/local_models.json" <<'EOF'
+{
+  "models": [
+    {
+      "slug": "active:model",
+      "display_name": "active:model",
+      "context_window": 4096,
+      "apply_patch_tool_type": "freeform"
+    },
+    {
+      "slug": "inactive:model",
+      "display_name": "inactive:model",
+      "context_window": 8192,
+      "apply_patch_tool_type": "function"
+    }
+  ]
+}
+EOF
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_OLLAMA_ROUTE_FILE="$temp_home/proc-net-route" \
+    -- run
+  assert_status 0
+  jq -er '
+    (.models[] | select(.slug == "active:model").apply_patch_tool_type) == "freeform" and
+    (.models[] | select(.slug == "inactive:model").apply_patch_tool_type) == "freeform"
+  ' "$temp_home/home/.codex/local_models.json" >/dev/null || fail "Expected all catalog entries to use freeform patch type"
+}
+
 test_agent_sh_codex_local_run_uses_model_override_for_catalog() {
   begin_test "agent.sh codex local run uses model override for catalog metadata"
 
@@ -6165,6 +6235,7 @@ main() {
   run_selected_test test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog "test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog"
   run_selected_test test_agent_sh_codex_local_run_updates_stale_catalog_entry "test_agent_sh_codex_local_run_updates_stale_catalog_entry"
   run_selected_test test_agent_sh_codex_local_run_reports_unchanged_catalog_entry "test_agent_sh_codex_local_run_reports_unchanged_catalog_entry"
+  run_selected_test test_agent_sh_codex_local_run_migrates_inactive_catalog_entries "test_agent_sh_codex_local_run_migrates_inactive_catalog_entries"
   run_selected_test test_agent_sh_codex_local_run_uses_model_override_for_catalog "test_agent_sh_codex_local_run_uses_model_override_for_catalog"
   run_selected_test test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog "test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog"
   run_selected_test test_agent_sh_codex_local_run_creates_missing_catalog "test_agent_sh_codex_local_run_creates_missing_catalog"
