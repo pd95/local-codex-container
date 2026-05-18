@@ -174,6 +174,16 @@ test_run_help_reports_runtime_options() {
   assert_contains "--online        Use the runtime's online/provider-backed mode"
 }
 
+test_doctor_help_reports_fix_option() {
+  begin_test "doctor help reports state repair options"
+
+  run_capture "$AGENTCTL" doctor --help
+  assert_status 0
+  assert_contains "Usage: agentctl doctor [options]"
+  assert_contains "--fix"
+  assert_contains "user-state ownership"
+}
+
 test_rescue_help_reports_backup_image_options() {
   begin_test "rescue help reports backup image options"
 
@@ -916,6 +926,7 @@ test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
 
   local start_calls=0
   local stop_calls=0
+  local running=0
   local exec_log=""
 
   require_container() { return 0; }
@@ -930,9 +941,11 @@ test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
     case "$1" in
       start)
         start_calls=$((start_calls + 1))
+        running=1
         ;;
       stop)
         stop_calls=$((stop_calls + 1))
+        running=0
         ;;
       exec)
         shift
@@ -3175,7 +3188,7 @@ test_container_auth_info_uses_agent_sh_auth_read() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         printf 'unit-token\t2026-04-17T00:00:00Z'
@@ -3222,7 +3235,7 @@ test_write_auth_blob_to_container_uses_agent_sh_auth_write() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         cat >"$payload_file"
@@ -3274,7 +3287,7 @@ test_write_auth_blob_to_container_falls_back_for_legacy_codex() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
@@ -3336,7 +3349,7 @@ test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
@@ -3518,7 +3531,7 @@ EOF
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [ "$*" = "bash /usr/local/bin/agent.sh runtime info codex" ]; then
@@ -3607,7 +3620,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info codex" ]; then
@@ -3678,7 +3691,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info claude" ]; then
@@ -3769,7 +3782,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info claude" ]; then
@@ -4183,6 +4196,7 @@ test_upgrade_uses_explicit_resource_overrides() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4267,6 +4281,7 @@ test_upgrade_can_rename_container_during_recreation() {
     esac
   }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4700,6 +4715,7 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() {
     case "$1" in
       agent-plain|agent-python) return 0 ;;
@@ -4860,6 +4876,7 @@ test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4951,6 +4968,7 @@ test_upgrade_warns_and_clears_missing_preferred_runtime() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -5016,6 +5034,7 @@ test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() {
     case "$1" in
       agent-python) return 0 ;;
@@ -5292,8 +5311,11 @@ test_container_baseline_manifest_starts_stopped_container_and_restores_state() {
         if [ "${1:-}" = "unit-test-container" ]; then
           shift
         fi
+        if [ "$*" = "true" ]; then
+          return 0
+        fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         case "$*" in
           "test -f /etc/agentctl/system-manifest.json")
@@ -5329,6 +5351,7 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
 
   local start_calls=0
   local stop_calls=0
+  local running=0
   local exec_log
   exec_log="$(mktemp "${TMPDIR:-/tmp}/codexctl-preflight-exec.XXXXXX")"
   register_dir_cleanup "$exec_log"
@@ -5338,9 +5361,11 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
     case "$1" in
       start)
         start_calls=$((start_calls + 1))
+        running=1
         ;;
       stop)
         stop_calls=$((stop_calls + 1))
+        running=0
         ;;
       exec)
         printf '%s\n' "$*" >>"$exec_log"
@@ -5348,8 +5373,11 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
         if [ "${1:-}" = "unit-test-container" ]; then
           shift
         fi
+        if [ "$*" = "true" ]; then
+          return 0
+        fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         case "$*" in
           "bash /usr/local/bin/agent.sh system manifest")
@@ -5374,13 +5402,13 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
         ;;
     esac
   }
-  container_running() { return 1; }
+  container_running() { [ "$running" -eq 1 ]; }
 
   collect_upgrade_container_preflight unit-test-container
 
   [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
   [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
-  [ "$(wc -l <"$exec_log" | tr -d '[:space:]')" = "4" ] || fail "Expected 4 exec calls, got: $(cat "$exec_log")"
+  [ "$(wc -l <"$exec_log" | tr -d '[:space:]')" = "5" ] || fail "Expected 5 exec calls, got: $(cat "$exec_log")"
   [ "$UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT" -eq 1 ] || fail "Expected state contract support to be detected"
   printf '%s' "$UPGRADE_PREFLIGHT_CONTAINER_MANIFEST" | jq -e '.packages == ["bash"]' >/dev/null 2>&1 || fail "Expected cached container manifest, got: $UPGRADE_PREFLIGHT_CONTAINER_MANIFEST"
   printf '%s' "$UPGRADE_PREFLIGHT_BASELINE_MANIFEST" | jq -e '.schema_version == 2' >/dev/null 2>&1 || fail "Expected cached baseline manifest, got: $UPGRADE_PREFLIGHT_BASELINE_MANIFEST"
@@ -5439,6 +5467,124 @@ test_refresh_updates_managed_files_without_recreate() {
   printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/runtimes.d" || fail "Expected refresh to update runtime registry"
   printf '%s\n' "$exec_log" | grep -Fq "/usr/local/lib/agentctl/features" || fail "Expected refresh to update feature adapters"
   printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/features.d" || fail "Expected refresh to update feature registry"
+}
+
+test_doctor_reports_state_permission_problems() {
+  begin_test "doctor reports user-state permission problems"
+
+  load_codexctl_functions
+
+  local running=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { [ "$running" -eq 1 ]; }
+  doctor_state_permissions() {
+    [ "$1" = "unit-test-container" ] || fail "Unexpected doctor target: $1"
+    [ "$2" = "0" ] || fail "Did not expect fix mode: $2"
+    printf '%s\n' '.codex/config.toml' '.codex/history.jsonl'
+    return 1
+  }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start) running=1 ;;
+      stop) running=0 ;;
+      exec) [ "$2" = "unit-test-container" ] && [ "$3" = "true" ] ;;
+      *) fail "Unexpected container invocation: $*" ;;
+    esac
+  }
+
+  run_capture doctor_cmd --name unit-test-container
+  assert_status 1
+  assert_contains "Starting container for doctor: unit-test-container"
+  assert_contains "Doctor found user-state ownership/readability problems in unit-test-container:"
+  assert_contains "  - .codex/config.toml"
+  assert_contains "doctor --name unit-test-container --fix"
+  assert_contains "Stopping container: unit-test-container"
+}
+
+test_doctor_reports_container_startup_problem() {
+  begin_test "doctor reports containers that do not stay running"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start) : ;;
+      logs) printf '%s\n' 'setpriv: apply bounding set: Operation not permitted' ;;
+      *) fail "Unexpected container invocation: $*" ;;
+    esac
+  }
+
+  run_capture doctor_cmd --name unit-test-container
+  assert_status 1
+  assert_contains "Warning: Container unit-test-container did not stay running after start during doctor."
+  assert_contains "setpriv: apply bounding set: Operation not permitted"
+  assert_contains "Doctor found a container startup problem in unit-test-container."
+}
+
+test_doctor_fix_repairs_state_permission_problems() {
+  begin_test "doctor --fix repairs user-state permission problems"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  doctor_state_permissions() {
+    [ "$1" = "unit-test-container" ] || fail "Unexpected doctor target: $1"
+    [ "$2" = "1" ] || fail "Expected fix mode, got: $2"
+    printf '%s\n' '.codex/config.toml'
+    return 1
+  }
+
+  CONTAINER_CMD=container
+  container() {
+    fail "Did not expect container lifecycle changes for a running container: $*"
+  }
+
+  run_capture doctor_cmd --name unit-test-container --fix
+  assert_status 0
+  assert_contains "Doctor repaired user-state ownership/readability problems in unit-test-container:"
+  assert_contains "  - .codex/config.toml"
+}
+
+test_container_state_permission_script_repairs_unreadable_state() {
+  begin_test "container state permission script repairs unreadable user state"
+
+  load_codexctl_functions
+
+  local temp_home
+  local script_file
+
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-doctor-home.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  script_file="$temp_home/doctor.sh"
+  mkdir -p "$temp_home/.codex"
+  printf 'config\n' >"$temp_home/.codex/config.toml"
+  chmod 000 "$temp_home/.codex/config.toml"
+
+  container_state_permission_script | sed "s#home=\"/home/coder\"#home=\"$temp_home\"#" >"$script_file"
+
+  run_capture sh "$script_file" 0
+  assert_status 0
+  assert_contains ".codex/config.toml"
+  [ ! -r "$temp_home/.codex/config.toml" ] || fail "Expected config.toml to remain unreadable without --fix"
+
+  run_capture sh "$script_file" 1
+  assert_status 0
+  assert_contains ".codex/config.toml"
+  [ -r "$temp_home/.codex/config.toml" ] || fail "Expected config.toml to become readable after fix"
 }
 
 test_refresh_container_file_streams_source_via_stdin() {
@@ -5952,6 +6098,7 @@ main() {
   run_selected_test test_run_config_wires_runtime_config_json "test_run_config_wires_runtime_config_json"
   run_selected_test test_run_help_reports_generic_runtime_config "test_run_help_reports_generic_runtime_config"
   run_selected_test test_run_help_reports_runtime_options "test_run_help_reports_runtime_options"
+  run_selected_test test_doctor_help_reports_fix_option "test_doctor_help_reports_fix_option"
   run_selected_test test_rescue_help_reports_backup_image_options "test_rescue_help_reports_backup_image_options"
   run_selected_test test_run_model_wires_selected_model "test_run_model_wires_selected_model"
   run_selected_test test_build_help_reports_primary_base_images "test_build_help_reports_primary_base_images"
@@ -6085,6 +6232,10 @@ main() {
   run_selected_test test_container_baseline_manifest_starts_stopped_container_and_restores_state "test_container_baseline_manifest_starts_stopped_container_and_restores_state"
   run_selected_test test_collect_upgrade_container_preflight_starts_stopped_container_once "test_collect_upgrade_container_preflight_starts_stopped_container_once"
   run_selected_test test_refresh_updates_managed_files_without_recreate "test_refresh_updates_managed_files_without_recreate"
+  run_selected_test test_doctor_reports_state_permission_problems "test_doctor_reports_state_permission_problems"
+  run_selected_test test_doctor_reports_container_startup_problem "test_doctor_reports_container_startup_problem"
+  run_selected_test test_doctor_fix_repairs_state_permission_problems "test_doctor_fix_repairs_state_permission_problems"
+  run_selected_test test_container_state_permission_script_repairs_unreadable_state "test_container_state_permission_script_repairs_unreadable_state"
   run_selected_test test_refresh_container_file_streams_source_via_stdin "test_refresh_container_file_streams_source_via_stdin"
   run_selected_test test_system_manifest_starts_stopped_container_and_restores_state "test_system_manifest_starts_stopped_container_and_restores_state"
   run_selected_test test_runtime_cmd_starts_stopped_container_and_restores_state "test_runtime_cmd_starts_stopped_container_and_restores_state"
