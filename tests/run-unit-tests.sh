@@ -3094,6 +3094,59 @@ test_agent_sh_state_import_with_empty_stdin_preserves_existing_state() {
   [ "$(cat "$temp_home/home/.codex/auth.json")" = "keep-me" ] || fail "Expected existing state to survive empty state import"
 }
 
+test_verify_restored_codex_state_passes_when_counts_match() {
+  begin_test "verify_restored_codex_state accepts restored Codex history and sessions"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local backup_file
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-state-verify.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  backup_file="$temp_dir/state.tar"
+
+  mkdir -p "$temp_dir/home/.codex/sessions/2026" "$temp_dir/home/.codex/archived_sessions"
+  printf 'one\nsecond\n' >"$temp_dir/home/.codex/history.jsonl"
+  printf 'idx\n' >"$temp_dir/home/.codex/session_index.jsonl"
+  printf 'session\n' >"$temp_dir/home/.codex/sessions/2026/session.jsonl"
+  printf 'archived\n' >"$temp_dir/home/.codex/archived_sessions/old.jsonl"
+  tar -C "$temp_dir/home" -cf "$backup_file" .codex
+
+  codex_state_summary_from_container() {
+    printf '2\t2\t1\n'
+  }
+
+  run_capture verify_restored_codex_state unit-test-container "$backup_file"
+  assert_status 0
+}
+
+test_verify_restored_codex_state_fails_when_counts_drop() {
+  begin_test "verify_restored_codex_state rejects missing restored Codex sessions"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local backup_file
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-state-verify.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  backup_file="$temp_dir/state.tar"
+
+  mkdir -p "$temp_dir/home/.codex/sessions/2026"
+  printf 'one\nsecond\n' >"$temp_dir/home/.codex/history.jsonl"
+  printf 'session\n' >"$temp_dir/home/.codex/sessions/2026/session.jsonl"
+  tar -C "$temp_dir/home" -cf "$backup_file" .codex
+
+  codex_state_summary_from_container() {
+    printf '0\t0\t0\n'
+  }
+
+  run_capture verify_restored_codex_state unit-test-container "$backup_file"
+  assert_status 1
+  assert_contains "Codex history restore verification failed"
+  assert_contains "Codex session restore verification failed"
+  assert_contains "Restored Codex state verification failed"
+}
+
 test_container_auth_info_uses_agent_sh_auth_read() {
   begin_test "container_auth_info reads auth via agent.sh auth read"
 
@@ -5989,6 +6042,8 @@ main() {
   run_selected_test test_agent_sh_state_import_restores_known_user_state "test_agent_sh_state_import_restores_known_user_state"
   run_selected_test test_agent_sh_state_import_uses_installed_runtime_hooks "test_agent_sh_state_import_uses_installed_runtime_hooks"
   run_selected_test test_agent_sh_state_import_with_empty_stdin_preserves_existing_state "test_agent_sh_state_import_with_empty_stdin_preserves_existing_state"
+  run_selected_test test_verify_restored_codex_state_passes_when_counts_match "test_verify_restored_codex_state_passes_when_counts_match"
+  run_selected_test test_verify_restored_codex_state_fails_when_counts_drop "test_verify_restored_codex_state_fails_when_counts_drop"
   run_selected_test test_container_auth_info_uses_agent_sh_auth_read "test_container_auth_info_uses_agent_sh_auth_read"
   run_selected_test test_write_auth_blob_to_container_uses_agent_sh_auth_write "test_write_auth_blob_to_container_uses_agent_sh_auth_write"
   run_selected_test test_write_auth_blob_to_container_falls_back_for_legacy_codex "test_write_auth_blob_to_container_falls_back_for_legacy_codex"
