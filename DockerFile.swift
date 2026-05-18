@@ -137,5 +137,5 @@ RUN git config --global user.email "codex@localhost" \
  && git config --global --add safe.directory /workdir
 
 # Hardened entrypoint
-ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--bounding-set=-all","--no-new-privs","--"]
+ENTRYPOINT ["setpriv","--inh-caps=-all","--ambient-caps=-all","--no-new-privs","--"]
 CMD ["/usr/local/bin/agent.sh","run"]

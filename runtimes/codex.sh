@@ -341,7 +341,7 @@ codex_build_model_entry() {
       slug: $slug,
       display_name: $display_name,
       context_window: $context_window,
-      apply_patch_tool_type: "function",
+      apply_patch_tool_type: "freeform",
       shell_type: "default",
       visibility: "list",
       supported_in_api: true,
@@ -425,7 +425,11 @@ codex_upsert_model_catalog() {
           if .slug == $new.slug then
             del(.reasoning_summary_format, .default_reasoning_summary, .default_reasoning_level) + $new
           else
-            .
+            if .apply_patch_tool_type == "function" then
+              .apply_patch_tool_type = "freeform"
+            else
+              .
+            end
           end
         ))
         + (if $exists then [] else [$new] end)

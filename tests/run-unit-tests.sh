@@ -174,6 +174,16 @@ test_run_help_reports_runtime_options() {
   assert_contains "--online        Use the runtime's online/provider-backed mode"
 }
 
+test_doctor_help_reports_fix_option() {
+  begin_test "doctor help reports state repair options"
+
+  run_capture "$AGENTCTL" doctor --help
+  assert_status 0
+  assert_contains "Usage: agentctl doctor [options]"
+  assert_contains "--fix"
+  assert_contains "user-state ownership"
+}
+
 test_rescue_help_reports_backup_image_options() {
   begin_test "rescue help reports backup image options"
 
@@ -916,6 +926,7 @@ test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
 
   local start_calls=0
   local stop_calls=0
+  local running=0
   local exec_log=""
 
   require_container() { return 0; }
@@ -930,9 +941,11 @@ test_bootstrap_cmd_bootstraps_alpine_container_and_restores_stopped_state() {
     case "$1" in
       start)
         start_calls=$((start_calls + 1))
+        running=1
         ;;
       stop)
         stop_calls=$((stop_calls + 1))
+        running=0
         ;;
       exec)
         shift
@@ -2097,6 +2110,7 @@ EOF
       "slug": "gpt-oss:20b",
       "display_name": "old name",
       "context_window": 1,
+      "apply_patch_tool_type": "function",
       "reasoning_summary_format": "none",
       "default_reasoning_summary": "auto",
       "default_reasoning_level": "medium",
@@ -2119,6 +2133,7 @@ EOF
     .models[0].slug == "gpt-oss:20b" and
     .models[0].display_name == "gpt-oss:20b" and
     .models[0].context_window == 16384 and
+    .models[0].apply_patch_tool_type == "freeform" and
     .models[0].custom == "keep" and
     .models[0].input_modalities == ["text"] and
     .models[0].supports_reasoning_summaries == false and
@@ -2178,7 +2193,7 @@ EOF
         slug: "gpt-oss:20b",
         display_name: "gpt-oss:20b",
         context_window: 4096,
-        apply_patch_tool_type: "function",
+        apply_patch_tool_type: "freeform",
         shell_type: "default",
         visibility: "list",
         supported_in_api: true,
@@ -2209,6 +2224,76 @@ EOF
   catalog_mtime_after="$(file_mtime "$temp_home/home/.codex/local_models.json")"
   [ "$config_mtime_after" = "$config_mtime_before" ] || fail "Expected unchanged Codex config timestamp to be preserved"
   [ "$catalog_mtime_after" = "$catalog_mtime_before" ] || fail "Expected unchanged Codex model catalog timestamp to be preserved"
+}
+
+test_agent_sh_codex_local_run_migrates_inactive_catalog_entries() {
+  begin_test "agent.sh codex local run migrates inactive model catalog entries"
+
+  local temp_home
+  local fake_bin
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/agent-sh-unit.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  fake_bin="$temp_home/bin"
+  mkdir -p "$fake_bin" "$temp_home/home/.codex"
+
+  cat >"$fake_bin/codex" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$fake_bin/codex"
+  cat >"$fake_bin/curl" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *'/api/version'*) printf '{"version":"0.0.0"}\n'; exit 0 ;;
+  *'/api/show'*)
+    cat >/dev/null
+    printf '{"system":"","capabilities":[],"details":{"format":"safetensors"},"model_info":{"llama.context_length":4096},"parameters":""}\n'
+    exit 0
+    ;;
+esac
+exit 1
+EOF
+  chmod +x "$fake_bin/curl"
+  cat >"$temp_home/proc-net-route" <<'EOF'
+Iface   Destination Gateway     Flags RefCnt Use Metric Mask        MTU Window IRTT
+eth0    00000000    0100A8C0    0003  0      0   0      00000000    0   0      0
+EOF
+  cat >"$temp_home/home/.codex/config.toml" <<'EOF'
+[model_providers.myollama]
+name = "Ollama"
+
+[profiles.gpt-oss]
+model_provider = "myollama"
+model = "active:model"
+EOF
+  cat >"$temp_home/home/.codex/local_models.json" <<'EOF'
+{
+  "models": [
+    {
+      "slug": "active:model",
+      "display_name": "active:model",
+      "context_window": 4096,
+      "apply_patch_tool_type": "freeform"
+    },
+    {
+      "slug": "inactive:model",
+      "display_name": "inactive:model",
+      "context_window": 8192,
+      "apply_patch_tool_type": "function"
+    }
+  ]
+}
+EOF
+
+  run_agent_sh_capture_env "$temp_home" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    AGENTCTL_OLLAMA_ROUTE_FILE="$temp_home/proc-net-route" \
+    -- run
+  assert_status 0
+  jq -er '
+    (.models[] | select(.slug == "active:model").apply_patch_tool_type) == "freeform" and
+    (.models[] | select(.slug == "inactive:model").apply_patch_tool_type) == "freeform"
+  ' "$temp_home/home/.codex/local_models.json" >/dev/null || fail "Expected all catalog entries to use freeform patch type"
 }
 
 test_agent_sh_codex_local_run_uses_model_override_for_catalog() {
@@ -3094,6 +3179,59 @@ test_agent_sh_state_import_with_empty_stdin_preserves_existing_state() {
   [ "$(cat "$temp_home/home/.codex/auth.json")" = "keep-me" ] || fail "Expected existing state to survive empty state import"
 }
 
+test_verify_restored_codex_state_passes_when_counts_match() {
+  begin_test "verify_restored_codex_state accepts restored Codex history and sessions"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local backup_file
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-state-verify.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  backup_file="$temp_dir/state.tar"
+
+  mkdir -p "$temp_dir/home/.codex/sessions/2026" "$temp_dir/home/.codex/archived_sessions"
+  printf 'one\nsecond\n' >"$temp_dir/home/.codex/history.jsonl"
+  printf 'idx\n' >"$temp_dir/home/.codex/session_index.jsonl"
+  printf 'session\n' >"$temp_dir/home/.codex/sessions/2026/session.jsonl"
+  printf 'archived\n' >"$temp_dir/home/.codex/archived_sessions/old.jsonl"
+  tar -C "$temp_dir/home" -cf "$backup_file" .codex
+
+  codex_state_summary_from_container() {
+    printf '2\t2\t1\n'
+  }
+
+  run_capture verify_restored_codex_state unit-test-container "$backup_file"
+  assert_status 0
+}
+
+test_verify_restored_codex_state_fails_when_counts_drop() {
+  begin_test "verify_restored_codex_state rejects missing restored Codex sessions"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local backup_file
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-state-verify.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  backup_file="$temp_dir/state.tar"
+
+  mkdir -p "$temp_dir/home/.codex/sessions/2026"
+  printf 'one\nsecond\n' >"$temp_dir/home/.codex/history.jsonl"
+  printf 'session\n' >"$temp_dir/home/.codex/sessions/2026/session.jsonl"
+  tar -C "$temp_dir/home" -cf "$backup_file" .codex
+
+  codex_state_summary_from_container() {
+    printf '0\t0\t0\n'
+  }
+
+  run_capture verify_restored_codex_state unit-test-container "$backup_file"
+  assert_status 1
+  assert_contains "Codex history restore verification failed"
+  assert_contains "Codex session restore verification failed"
+  assert_contains "Restored Codex state verification failed"
+}
+
 test_container_auth_info_uses_agent_sh_auth_read() {
   begin_test "container_auth_info reads auth via agent.sh auth read"
 
@@ -3120,7 +3258,7 @@ test_container_auth_info_uses_agent_sh_auth_read() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         printf 'unit-token\t2026-04-17T00:00:00Z'
@@ -3167,7 +3305,7 @@ test_write_auth_blob_to_container_uses_agent_sh_auth_write() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         cat >"$payload_file"
@@ -3219,7 +3357,7 @@ test_write_auth_blob_to_container_falls_back_for_legacy_codex() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
@@ -3281,7 +3419,7 @@ test_write_auth_blob_to_container_does_not_fallback_on_non_legacy_error() {
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [[ "$*" == "bash /usr/local/bin/agent.sh auth write codex json_refresh_token" ]]; then
@@ -3463,7 +3601,7 @@ EOF
           shift
         fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         printf '%s\n' "$*" >>"$exec_log_file"
         if [ "$*" = "bash /usr/local/bin/agent.sh runtime info codex" ]; then
@@ -3552,7 +3690,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info codex" ]; then
@@ -3623,7 +3761,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info claude" ]; then
@@ -3714,7 +3852,7 @@ container() {
         shift
       fi
       if [ "\${1:-}" = "setpriv" ]; then
-        shift 6
+        shift 5
       fi
       printf '%s\n' "\$*" >>"$exec_log_file"
       if [ "\$*" = "bash /usr/local/bin/agent.sh runtime info claude" ]; then
@@ -4128,6 +4266,7 @@ test_upgrade_uses_explicit_resource_overrides() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4212,6 +4351,7 @@ test_upgrade_can_rename_container_during_recreation() {
     esac
   }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4645,6 +4785,7 @@ test_upgrade_warns_about_added_packages_missing_from_target_image() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() {
     case "$1" in
       agent-plain|agent-python) return 0 ;;
@@ -4805,6 +4946,7 @@ test_upgrade_reinstalls_added_runtimes_and_features_in_target() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4896,6 +5038,7 @@ test_upgrade_warns_and_clears_missing_preferred_runtime() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() { return 0; }
   codex_agents_state() { printf 'missing\n'; }
   backup_codex_config() { :; }
@@ -4961,6 +5104,7 @@ test_upgrade_uses_stored_baseline_when_current_image_is_missing() {
   container_supports_state_contract() { return 0; }
   container_exists() { [ "$1" = "unit-test-container" ]; }
   container_running() { return 1; }
+  ensure_started_container_is_running() { return 0; }
   image_exists() {
     case "$1" in
       agent-python) return 0 ;;
@@ -5237,8 +5381,11 @@ test_container_baseline_manifest_starts_stopped_container_and_restores_state() {
         if [ "${1:-}" = "unit-test-container" ]; then
           shift
         fi
+        if [ "$*" = "true" ]; then
+          return 0
+        fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         case "$*" in
           "test -f /etc/agentctl/system-manifest.json")
@@ -5274,6 +5421,7 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
 
   local start_calls=0
   local stop_calls=0
+  local running=0
   local exec_log
   exec_log="$(mktemp "${TMPDIR:-/tmp}/codexctl-preflight-exec.XXXXXX")"
   register_dir_cleanup "$exec_log"
@@ -5283,9 +5431,11 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
     case "$1" in
       start)
         start_calls=$((start_calls + 1))
+        running=1
         ;;
       stop)
         stop_calls=$((stop_calls + 1))
+        running=0
         ;;
       exec)
         printf '%s\n' "$*" >>"$exec_log"
@@ -5293,8 +5443,11 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
         if [ "${1:-}" = "unit-test-container" ]; then
           shift
         fi
+        if [ "$*" = "true" ]; then
+          return 0
+        fi
         if [ "${1:-}" = "setpriv" ]; then
-          shift 6
+          shift 5
         fi
         case "$*" in
           "bash /usr/local/bin/agent.sh system manifest")
@@ -5319,13 +5472,13 @@ test_collect_upgrade_container_preflight_starts_stopped_container_once() {
         ;;
     esac
   }
-  container_running() { return 1; }
+  container_running() { [ "$running" -eq 1 ]; }
 
   collect_upgrade_container_preflight unit-test-container
 
   [ "$start_calls" -eq 1 ] || fail "Expected 1 start call, got: $start_calls"
   [ "$stop_calls" -eq 1 ] || fail "Expected 1 stop call, got: $stop_calls"
-  [ "$(wc -l <"$exec_log" | tr -d '[:space:]')" = "4" ] || fail "Expected 4 exec calls, got: $(cat "$exec_log")"
+  [ "$(wc -l <"$exec_log" | tr -d '[:space:]')" = "5" ] || fail "Expected 5 exec calls, got: $(cat "$exec_log")"
   [ "$UPGRADE_PREFLIGHT_SOURCE_SUPPORTS_STATE_CONTRACT" -eq 1 ] || fail "Expected state contract support to be detected"
   printf '%s' "$UPGRADE_PREFLIGHT_CONTAINER_MANIFEST" | jq -e '.packages == ["bash"]' >/dev/null 2>&1 || fail "Expected cached container manifest, got: $UPGRADE_PREFLIGHT_CONTAINER_MANIFEST"
   printf '%s' "$UPGRADE_PREFLIGHT_BASELINE_MANIFEST" | jq -e '.schema_version == 2' >/dev/null 2>&1 || fail "Expected cached baseline manifest, got: $UPGRADE_PREFLIGHT_BASELINE_MANIFEST"
@@ -5386,6 +5539,124 @@ test_refresh_updates_managed_files_without_recreate() {
   printf '%s\n' "$exec_log" | grep -Fq "/etc/agentctl/features.d" || fail "Expected refresh to update feature registry"
 }
 
+test_doctor_reports_state_permission_problems() {
+  begin_test "doctor reports user-state permission problems"
+
+  load_codexctl_functions
+
+  local running=0
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { [ "$running" -eq 1 ]; }
+  doctor_state_permissions() {
+    [ "$1" = "unit-test-container" ] || fail "Unexpected doctor target: $1"
+    [ "$2" = "0" ] || fail "Did not expect fix mode: $2"
+    printf '%s\n' '.codex/config.toml' '.codex/history.jsonl'
+    return 1
+  }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start) running=1 ;;
+      stop) running=0 ;;
+      exec) [ "$2" = "unit-test-container" ] && [ "$3" = "true" ] ;;
+      *) fail "Unexpected container invocation: $*" ;;
+    esac
+  }
+
+  run_capture doctor_cmd --name unit-test-container
+  assert_status 1
+  assert_contains "Starting container for doctor: unit-test-container"
+  assert_contains "Doctor found user-state ownership/readability problems in unit-test-container:"
+  assert_contains "  - .codex/config.toml"
+  assert_contains "doctor --name unit-test-container --fix"
+  assert_contains "Stopping container: unit-test-container"
+}
+
+test_doctor_reports_container_startup_problem() {
+  begin_test "doctor reports containers that do not stay running"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 1; }
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      start) : ;;
+      logs) printf '%s\n' 'setpriv: apply bounding set: Operation not permitted' ;;
+      *) fail "Unexpected container invocation: $*" ;;
+    esac
+  }
+
+  run_capture doctor_cmd --name unit-test-container
+  assert_status 1
+  assert_contains "Warning: Container unit-test-container did not stay running after start during doctor."
+  assert_contains "setpriv: apply bounding set: Operation not permitted"
+  assert_contains "Doctor found a container startup problem in unit-test-container."
+}
+
+test_doctor_fix_repairs_state_permission_problems() {
+  begin_test "doctor --fix repairs user-state permission problems"
+
+  load_codexctl_functions
+
+  require_container() { return 0; }
+  default_name() { printf 'unit-test-container\n'; }
+  container_exists() { [ "$1" = "unit-test-container" ]; }
+  container_running() { return 0; }
+  doctor_state_permissions() {
+    [ "$1" = "unit-test-container" ] || fail "Unexpected doctor target: $1"
+    [ "$2" = "1" ] || fail "Expected fix mode, got: $2"
+    printf '%s\n' '.codex/config.toml'
+    return 1
+  }
+
+  CONTAINER_CMD=container
+  container() {
+    fail "Did not expect container lifecycle changes for a running container: $*"
+  }
+
+  run_capture doctor_cmd --name unit-test-container --fix
+  assert_status 0
+  assert_contains "Doctor repaired user-state ownership/readability problems in unit-test-container:"
+  assert_contains "  - .codex/config.toml"
+}
+
+test_container_state_permission_script_repairs_unreadable_state() {
+  begin_test "container state permission script repairs unreadable user state"
+
+  load_codexctl_functions
+
+  local temp_home
+  local script_file
+
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-doctor-home.XXXXXX")"
+  register_dir_cleanup "$temp_home"
+  script_file="$temp_home/doctor.sh"
+  mkdir -p "$temp_home/.codex"
+  printf 'config\n' >"$temp_home/.codex/config.toml"
+  chmod 000 "$temp_home/.codex/config.toml"
+
+  container_state_permission_script | sed "s#home=\"/home/coder\"#home=\"$temp_home\"#" >"$script_file"
+
+  run_capture sh "$script_file" 0
+  assert_status 0
+  assert_contains ".codex/config.toml"
+  [ ! -r "$temp_home/.codex/config.toml" ] || fail "Expected config.toml to remain unreadable without --fix"
+
+  run_capture sh "$script_file" 1
+  assert_status 0
+  assert_contains ".codex/config.toml"
+  [ -r "$temp_home/.codex/config.toml" ] || fail "Expected config.toml to become readable after fix"
+}
+
 test_refresh_container_file_streams_source_via_stdin() {
   begin_test "refresh_container_file uses interactive exec for stdin streaming"
 
@@ -5416,6 +5687,54 @@ test_refresh_container_file_streams_source_via_stdin() {
 
   refresh_container_file unit-test-container "$source_file" /usr/local/bin/agent.sh root:root 755
   printf '%s\n' "$exec_log" | grep -Fq -- '-i -u 0 unit-test-container sh -lc cat > '\''/usr/local/bin/agent.sh'\''' || fail "Expected refresh_container_file to use exec -i for stdin streaming, got: $exec_log"
+}
+
+test_refresh_container_tree_suppresses_host_xattrs() {
+  begin_test "refresh_container_tree suppresses host extended attributes"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local source_dir
+  local tar_log
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-refresh-tree.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  source_dir="$temp_dir/source"
+  tar_log="$temp_dir/tar.log"
+  mkdir -p "$source_dir"
+  printf 'data\n' >"$source_dir/file.txt"
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      exec)
+        cat >/dev/null || true
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  tar() {
+    printf 'COPYFILE_DISABLE=%s args=%s\n' "${COPYFILE_DISABLE:-}" "$*" >>"$tar_log"
+    case "$*" in
+      "--no-xattrs -cf /dev/null -T /dev/null")
+        return 0
+        ;;
+      "--no-xattrs -C $source_dir -cf - .")
+        printf 'tar-stream'
+        return 0
+        ;;
+      *)
+        fail "Unexpected tar invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture refresh_container_tree unit-test-container "$source_dir" /etc/agentctl/runtimes root:root 644 755
+  unset -f tar
+  assert_status 0
+  grep -Fq 'COPYFILE_DISABLE=1 args=--no-xattrs -C '"$source_dir"' -cf - .' "$tar_log" || fail "Expected refresh tar stream to disable xattrs, got: $(cat "$tar_log")"
 }
 
 test_system_manifest_starts_stopped_container_and_restores_state() {
@@ -5897,6 +6216,7 @@ main() {
   run_selected_test test_run_config_wires_runtime_config_json "test_run_config_wires_runtime_config_json"
   run_selected_test test_run_help_reports_generic_runtime_config "test_run_help_reports_generic_runtime_config"
   run_selected_test test_run_help_reports_runtime_options "test_run_help_reports_runtime_options"
+  run_selected_test test_doctor_help_reports_fix_option "test_doctor_help_reports_fix_option"
   run_selected_test test_rescue_help_reports_backup_image_options "test_rescue_help_reports_backup_image_options"
   run_selected_test test_run_model_wires_selected_model "test_run_model_wires_selected_model"
   run_selected_test test_build_help_reports_primary_base_images "test_build_help_reports_primary_base_images"
@@ -5963,6 +6283,7 @@ main() {
   run_selected_test test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog "test_agent_sh_codex_local_run_with_explicit_profile_updates_catalog"
   run_selected_test test_agent_sh_codex_local_run_updates_stale_catalog_entry "test_agent_sh_codex_local_run_updates_stale_catalog_entry"
   run_selected_test test_agent_sh_codex_local_run_reports_unchanged_catalog_entry "test_agent_sh_codex_local_run_reports_unchanged_catalog_entry"
+  run_selected_test test_agent_sh_codex_local_run_migrates_inactive_catalog_entries "test_agent_sh_codex_local_run_migrates_inactive_catalog_entries"
   run_selected_test test_agent_sh_codex_local_run_uses_model_override_for_catalog "test_agent_sh_codex_local_run_uses_model_override_for_catalog"
   run_selected_test test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog "test_agent_sh_codex_local_run_uses_explicit_model_arg_for_catalog"
   run_selected_test test_agent_sh_codex_local_run_creates_missing_catalog "test_agent_sh_codex_local_run_creates_missing_catalog"
@@ -5989,6 +6310,8 @@ main() {
   run_selected_test test_agent_sh_state_import_restores_known_user_state "test_agent_sh_state_import_restores_known_user_state"
   run_selected_test test_agent_sh_state_import_uses_installed_runtime_hooks "test_agent_sh_state_import_uses_installed_runtime_hooks"
   run_selected_test test_agent_sh_state_import_with_empty_stdin_preserves_existing_state "test_agent_sh_state_import_with_empty_stdin_preserves_existing_state"
+  run_selected_test test_verify_restored_codex_state_passes_when_counts_match "test_verify_restored_codex_state_passes_when_counts_match"
+  run_selected_test test_verify_restored_codex_state_fails_when_counts_drop "test_verify_restored_codex_state_fails_when_counts_drop"
   run_selected_test test_container_auth_info_uses_agent_sh_auth_read "test_container_auth_info_uses_agent_sh_auth_read"
   run_selected_test test_write_auth_blob_to_container_uses_agent_sh_auth_write "test_write_auth_blob_to_container_uses_agent_sh_auth_write"
   run_selected_test test_write_auth_blob_to_container_falls_back_for_legacy_codex "test_write_auth_blob_to_container_falls_back_for_legacy_codex"
@@ -6028,7 +6351,12 @@ main() {
   run_selected_test test_container_baseline_manifest_starts_stopped_container_and_restores_state "test_container_baseline_manifest_starts_stopped_container_and_restores_state"
   run_selected_test test_collect_upgrade_container_preflight_starts_stopped_container_once "test_collect_upgrade_container_preflight_starts_stopped_container_once"
   run_selected_test test_refresh_updates_managed_files_without_recreate "test_refresh_updates_managed_files_without_recreate"
+  run_selected_test test_doctor_reports_state_permission_problems "test_doctor_reports_state_permission_problems"
+  run_selected_test test_doctor_reports_container_startup_problem "test_doctor_reports_container_startup_problem"
+  run_selected_test test_doctor_fix_repairs_state_permission_problems "test_doctor_fix_repairs_state_permission_problems"
+  run_selected_test test_container_state_permission_script_repairs_unreadable_state "test_container_state_permission_script_repairs_unreadable_state"
   run_selected_test test_refresh_container_file_streams_source_via_stdin "test_refresh_container_file_streams_source_via_stdin"
+  run_selected_test test_refresh_container_tree_suppresses_host_xattrs "test_refresh_container_tree_suppresses_host_xattrs"
   run_selected_test test_system_manifest_starts_stopped_container_and_restores_state "test_system_manifest_starts_stopped_container_and_restores_state"
   run_selected_test test_runtime_cmd_starts_stopped_container_and_restores_state "test_runtime_cmd_starts_stopped_container_and_restores_state"
   run_selected_test test_runtime_cmd_propagates_exec_failures "test_runtime_cmd_propagates_exec_failures"
