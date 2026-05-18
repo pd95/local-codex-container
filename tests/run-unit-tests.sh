@@ -5689,6 +5689,54 @@ test_refresh_container_file_streams_source_via_stdin() {
   printf '%s\n' "$exec_log" | grep -Fq -- '-i -u 0 unit-test-container sh -lc cat > '\''/usr/local/bin/agent.sh'\''' || fail "Expected refresh_container_file to use exec -i for stdin streaming, got: $exec_log"
 }
 
+test_refresh_container_tree_suppresses_host_xattrs() {
+  begin_test "refresh_container_tree suppresses host extended attributes"
+
+  load_codexctl_functions
+
+  local temp_dir
+  local source_dir
+  local tar_log
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codexctl-refresh-tree.XXXXXX")"
+  register_dir_cleanup "$temp_dir"
+  source_dir="$temp_dir/source"
+  tar_log="$temp_dir/tar.log"
+  mkdir -p "$source_dir"
+  printf 'data\n' >"$source_dir/file.txt"
+
+  CONTAINER_CMD=container
+  container() {
+    case "$1" in
+      exec)
+        cat >/dev/null || true
+        ;;
+      *)
+        fail "Unexpected container invocation: $*"
+        ;;
+    esac
+  }
+  tar() {
+    printf 'COPYFILE_DISABLE=%s args=%s\n' "${COPYFILE_DISABLE:-}" "$*" >>"$tar_log"
+    case "$*" in
+      "--no-xattrs -cf /dev/null -T /dev/null")
+        return 0
+        ;;
+      "--no-xattrs -C $source_dir -cf - .")
+        printf 'tar-stream'
+        return 0
+        ;;
+      *)
+        fail "Unexpected tar invocation: $*"
+        ;;
+    esac
+  }
+
+  run_capture refresh_container_tree unit-test-container "$source_dir" /etc/agentctl/runtimes root:root 644 755
+  unset -f tar
+  assert_status 0
+  grep -Fq 'COPYFILE_DISABLE=1 args=--no-xattrs -C '"$source_dir"' -cf - .' "$tar_log" || fail "Expected refresh tar stream to disable xattrs, got: $(cat "$tar_log")"
+}
+
 test_system_manifest_starts_stopped_container_and_restores_state() {
   begin_test "system-manifest starts a stopped container and restores stopped state"
 
@@ -6308,6 +6356,7 @@ main() {
   run_selected_test test_doctor_fix_repairs_state_permission_problems "test_doctor_fix_repairs_state_permission_problems"
   run_selected_test test_container_state_permission_script_repairs_unreadable_state "test_container_state_permission_script_repairs_unreadable_state"
   run_selected_test test_refresh_container_file_streams_source_via_stdin "test_refresh_container_file_streams_source_via_stdin"
+  run_selected_test test_refresh_container_tree_suppresses_host_xattrs "test_refresh_container_tree_suppresses_host_xattrs"
   run_selected_test test_system_manifest_starts_stopped_container_and_restores_state "test_system_manifest_starts_stopped_container_and_restores_state"
   run_selected_test test_runtime_cmd_starts_stopped_container_and_restores_state "test_runtime_cmd_starts_stopped_container_and_restores_state"
   run_selected_test test_runtime_cmd_propagates_exec_failures "test_runtime_cmd_propagates_exec_failures"

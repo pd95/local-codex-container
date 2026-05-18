@@ -2682,6 +2682,20 @@ write_container_file_content() {
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "chmod $mode '$target' && chown $owner '$target'"
 }
 
+tar_supports_no_xattrs() {
+  tar --no-xattrs -cf /dev/null -T /dev/null >/dev/null 2>&1
+}
+
+tar_create_tree_stream() {
+  local source="$1"
+
+  if tar_supports_no_xattrs; then
+    COPYFILE_DISABLE=1 tar --no-xattrs -C "$source" -cf - .
+  else
+    COPYFILE_DISABLE=1 tar -C "$source" -cf - .
+  fi
+}
+
 refresh_container_tree() {
   local name="$1"
   local source="$2"
@@ -2692,7 +2706,7 @@ refresh_container_tree() {
 
   [ -d "$source" ] || die "Refresh source directory not found: $source"
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "mkdir -p '$target'"
-  tar -C "$source" -cf - . | "$CONTAINER_CMD" exec -i -u 0 "$name" sh -lc "tar -xf - -C '$target'"
+  tar_create_tree_stream "$source" | "$CONTAINER_CMD" exec -i -u 0 "$name" sh -lc "tar -xf - -C '$target'"
   "$CONTAINER_CMD" exec -u 0 "$name" sh -lc "chown -R $owner '$target' && find '$target' -type d -exec chmod $dir_mode {} + && find '$target' -type f -exec chmod $file_mode {} +"
 }
 
